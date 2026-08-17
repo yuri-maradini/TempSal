@@ -109,25 +109,28 @@ Generata da due nuovi script (riusabili anche per lo Step 2):
 
 **Punto lasciato aperto** (non risolto in questo step, era già nella checklist): aspect ratio. `img_transform` fa `transforms.Resize((256, 256))`, cioè uno **stretch forzato a quadrato**, applicato sia da PIL sull'immagine sia dal nostro `prepare_ueyes.py` sulla rasterizzazione delle fixation map (coordinate normalizzate mappate direttamente su una griglia 256×256 quadrata). Le foto naturali di SALICON tollerano questa distorsione; gli screenshot UI di UEyes (spesso molto più larghi che alti) potrebbero risentirne di più — da tenere a mente se i risultati fossero sotto le aspettative.
 
-### Step 2 — Generare i volumi di salienza temporale (GT) per UEyes
+### Step 2 — Generare i volumi di salienza temporale (GT) per UEyes ✅ FATTO
 
-Questo è il cuore del lavoro specifico per la temporal saliency. Bisogna scrivere l'equivalente di `src/generate_volumes.py`, ma per UEyes. Due opzioni, da scegliere in base a quanto si vuole restare fedeli all'architettura originale:
+Scelta **Opzione A** (bin disgiunti da 1s, `time_slices=5`, fedele a TempSAL — per un confronto diretto con il paper originale). Nuovo script: **`src/generate_volumes_ueyes.py`**, equivalente di `src/generate_volumes.py` ma per UEyes, riusando `ueyes_utils.load_all_fixations()` già scritto per lo Step 1.
 
-**Opzione A — Bin temporali disgiunti da 1s (fedele a TempSAL, `time_slices=5`)**
-1. Per ogni immagine (`MEDIA_NAME`), raccogliere tutte le fissazioni di tutti i partecipanti che l'hanno osservata, leggendo i file `eyetracker_logs/*.csv` filtrati per `MEDIA_NAME` e `FPOGV == 1` (fissazioni valide).
-2. Assegnare ogni fissazione al bin `floor(FPOGS)` (bin da 0 a 4, scartando o clippando le fissazioni oltre i 5s se si vuole restare sulla finestra a 5s di TempSAL — da decidere se troncare a 5s o estendere a più bin dato che UEyes traccia fino a 7s). `FPOGS` è già relativo all'onset dell'immagine (verificato empiricamente, vedi sezione 1.4), quindi nessun ricalcolo necessario. Politica per le fissazioni a cavallo di un confine di bin (es. `FPOGS=0.8`, `FPOGD=0.5` → termina a 1.3s): assegnazione per intero al bin di `FPOGS` (stesso criterio di `generate_volumes.py` riga 36) è la scelta più semplice e coerente con l'originale; lo split proporzionale tra bin è più accurato ma più complesso.
-3. Costruire una fixation map binaria per bin (coordinate `FPOGX`/`FPOGY` denormalizzate sulla risoluzione dell'immagine).
-4. Applicare lo stesso Gaussian blur 2D usato da TempSAL (`utils.py::GaussianBlur2D`, sigma=25, kernel 201×201) per ottenere heatmap smooth, normalizzate per il massimo (stessa logica di `utils.py::get_saliency_volume`).
-5. Salvare come `{image_id}_{0..4}.png`, analogamente a `data/fixation_volumes_5-original/` già presente nel repo per SALICON.
-6. Vantaggio: permette il warm-start dal checkpoint esistente sul ramo temporale (`pnas_vol`) senza modificare l'architettura (`time_slices` resta 5).
-7. Svantaggio: bisogna scrivere il parsing/binning da zero (il parsing esistente in `utils.py::parse_fixations` è specifico per file `.mat` SALICON e per l'euristica di stima dei timestamp — qui va sostituito con un parser CSV diretto, più semplice perché i timestamp sono già presenti).
+**Output generato**:
+```
+data_ueyes/
+├── fixation_volumes_5/{train,val}/{image_id}_{0..4}.png   # 9360 train + 540 val
+└── saliency_volumes_5/{train,val}/{image_id}_{0..4}.png   # 9360 train + 540 val
+```
 
-**Opzione B — Usare direttamente le 3 finestre cumulative di UEyes (1s/3s/7s)**
-1. Usare `heatmaps_1s`, `heatmaps_3s`, `heatmaps_7s` così come sono, senza post-processing aggiuntivo.
-2. Richiede di modificare `time_slices` da 5 a 3 nel modello (`PNASVolModellast`, ultimo layer conv da `out_channels=time_slices`), perdendo però il warm-start su quel layer specifico (gli altri layer restano compatibili).
-3. Più veloce da implementare, meno lavoro di data engineering, ma si allontana dalla semantica "bin disgiunti da 1s" del paper originale — le 3 mappe non sono direttamente confrontabili come sequenza di intervalli, sono finestre annidate (0-3s include 0-1s).
+**Regole di binning** (decise con l'utente):
+- Ogni fissazione assegnata al bin `min(int(FPOGS), 4)` — usa solo l'istante di inizio, mai la durata, esattamente il criterio di `generate_volumes.py` originale (riga 36). Per le fissazioni a cavallo di un confine di bin, questo significa assegnazione per intero al bin che contiene `FPOGS` — scelta fatta per fedeltà metodologica con TempSAL (è la stessa identica regola), non per un limite tecnico.
+- Le fissazioni oltre i 5s (UEyes traccia fino a ~7s, TempSAL/SALICON si ferma a `TIMESPAN=5000ms`) **non vengono scartate**: il `min(..., 4)` le clippa nell'ultimo bin, esattamente come fa la formula originale (`min(int(ts*time_slices/TIMESPAN), time_slices-1)`) con la propria coda oltre i 5s. Nessuna perdita di dati, coerenza totale con l'originale.
 
-**Raccomandazione**: partire con l'opzione A se il tempo lo consente (più corretta metodologicamente, più facilmente descrivibile/difendibile in tesi come "stessa metodologia di TempSAL applicata a UEyes"); opzione B come fallback più rapido se il tempo stringe.
+**Bug trovato nel codice di riferimento** (bloccante, non solo di portabilità): `utils.py::GaussianBlur2D`/`GaussianBlur1D` chiamano `F.conv1d` su un tensore 5D — `conv1d` richiede input 2D/3D, non l'ha mai supportato in nessuna versione di PyTorch. Verificato empiricamente (`RuntimeError: Expected 2D (unbatched) or 3D (batched) input to conv1d, but got input of size: [1, 1, 5, 480, 640]`), indipendentemente da CPU/GPU. È quindi molto probabile che i file già inclusi nel repo (`data/fixation_volumes_5-original/`) NON siano stati generati eseguendo letteralmente `generate_volumes.py` come pubblicato. Sostituito con `cv2.GaussianBlur`, stessi identici parametri dell'originale (sigma=25, kernel 201×201) — stesso effetto matematico, implementazione funzionante.
+
+**Altri dettagli di fedeltà preservati**:
+- Canvas fisso 640×480 (le stesse costanti `W`/`H` di `utils.py`), non la risoluzione nativa di ogni screenshot — stessa risoluzione intermedia che TempSAL usa per SALICON prima del resize a 256×256 in fase di training. Il downscale a 256×256 è lasciato al loader dello Step 3 (**da non ripetere l'errore trovato nello Step 1**: il loader dovrà ridimensionare esplicitamente anche questi volumi, non solo `gt`).
+- Normalizzazione per un **unico massimo globale su tutto il volume a 5 canali** (non per-canale), replicando esattamente `utils.py::get_saliency_volume` (`saliency_volume / saliency_volume.max()`) — preserva le differenze di intensità relativa tra slice (uno slice con più fissazioni resta visibilmente più "acceso" degli altri dopo la normalizzazione).
+
+**Verifica fatta**: conteggio file (9360+540 per entrambe le cartelle, combacia con 1872/108 × 5 slice), ispezione visiva delle 5 slice di un'immagine campione (pattern spaziali distinti e plausibili slice per slice, non identici né rumore casuale), controllo numerico (fissazioni totali per immagine sommate sulle 5 slice ≈ conteggio trovato nello Step 1, scarto di 1 dovuto alla differente risoluzione di rasterizzazione 640×480 vs 256×256 — non un bug).
 
 ### Step 3 — Correggere i bug del training script
 
@@ -160,8 +163,7 @@ Questo è il cuore del lavoro specifico per la temporal saliency. Bisogna scrive
 ## 3. Decisioni aperte (da prendere prima di procedere)
 
 - [x] ~~Estensione immagini mista e qualità fixation map~~ — risolto nello Step 1: loader esteso per estensioni miste, fixation map ricostruita da `eyetracker_logs/` invece che da `fixmaps_7s`.
-- [ ] Opzione A (bin disgiunti da 1s, ricostruiti da `eyetracker_logs/`) vs Opzione B (3 finestre cumulative native di UEyes) per il volume di salienza temporale — vedi Step 2.
-- [ ] Troncare l'osservazione a 5s (come SALICON/TempSAL) o sfruttare la finestra più lunga di UEyes (7s), se si va con l'Opzione A.
+- [x] ~~Opzione A vs Opzione B per il volume di salienza temporale~~ — risolto nello Step 2: scelta l'Opzione A (bin disgiunti da 1s, fedeltà a TempSAL). Fissazioni oltre i 5s clippate nell'ultimo bin (non scartate), fissazioni a cavallo di un bin assegnate per intero al bin di `FPOGS`.
 - [ ] Scongelare `pnas_vol` (fine-tuning "vero" del ramo temporale) o lasciarlo congelato e allenare solo i layer di mixing (transfer learning più conservativo).
 - [ ] Resize con stretch (comportamento attuale) o con padding, per gli screenshot UI non quadrati.
 - [ ] Dove eseguire il training vero (serve una GPU: Colab, cluster universitario, altra macchina disponibile).
