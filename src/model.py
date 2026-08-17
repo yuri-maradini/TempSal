@@ -267,8 +267,11 @@ class PNASBoostedModelMultiLevel(nn.Module):
         model_vol.load_state_dict(vol_state_dict)
         self.pnas_vol = nn.DataParallel(model_vol).to(device)
 
+        # Only the temporal branch is tied to train_model: pnas_sal (final map)
+        # stays frozen regardless, so fine-tuning here only ever adapts the
+        # 5-slice temporal prediction, never the aggregate one.
         for param in self.pnas_vol.parameters():
-            param.requires_grad = False
+            param.requires_grad = train_model
 
 
         model = PNASModel(load_weight=0)
@@ -278,7 +281,7 @@ class PNASBoostedModelMultiLevel(nn.Module):
         self.pnas_sal = nn.DataParallel(model).to(device)
 
         for param in self.pnas_sal.parameters():
-            param.requires_grad = False #train_model
+            param.requires_grad = False
 
     def forward(self, images):
       #  print("IMAGES", images.shape)
