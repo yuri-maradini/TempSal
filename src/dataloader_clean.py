@@ -18,6 +18,11 @@ class SaliconDataset(DataLoader):
         self.fix_dir = fix_dir
         self.img_ids = img_ids
         self.exten = exten
+        # UEyes mixes .jpg/.png/.jpeg source images (SALICON is always .jpg),
+        # so look up each image's real extension instead of assuming .jpg.
+        self.img_filenames = {
+            os.path.splitext(f)[0]: f for f in os.listdir(img_dir)
+        }
         self.img_transform = transforms.Compose([
             transforms.Resize((256, 256)),
             transforms.ToTensor(),
@@ -27,7 +32,7 @@ class SaliconDataset(DataLoader):
 
     def __getitem__(self, idx):
         img_id = self.img_ids[idx]
-        img_path = os.path.join(self.img_dir, img_id + '.jpg')
+        img_path = os.path.join(self.img_dir, self.img_filenames[img_id])
         gt_path = os.path.join(self.gt_dir, img_id + self.exten)
         fix_path = os.path.join(self.fix_dir, img_id + self.exten)
 
