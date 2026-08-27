@@ -190,8 +190,38 @@ python train.py \
 
 ### Step 5 — Validazione e metriche
 
-- `validate()` in `train.py` calcola già CC, KLDIV, NSS, SIM — ma solo sulla mappa finale aggregata. Se si vuole anche una valutazione quantitativa della qualità della salienza *temporale* (non solo finale), va esteso analogamente allo Step 3: calcolare le stesse metriche per-slice tra `vol_pred` e il volume GT, e loggarle separatamente (utile anche per la tesi: permette di mostrare se il modello migliora slice per slice dopo il fine-tuning, non solo sulla mappa aggregata).
-- Tenere da parte alcune predizioni + heatmap GT per un confronto visivo qualitativo (come fatto nel test di inferenza, sezione 1.3) da includere nella tesi.
+- ✅ `validate()` in `train.py` calcola già CC, KLDIV, NSS, SIM sulla mappa aggregata **e** CC/KLDIV per-slice (`Vol/CC`, `Vol/KLDIV`) sul volume temporale — fatto insieme allo Step 3.
+- ✅ **Strumenti di valutazione/visualizzazione** — vedi sezione dedicata sotto (`evaluate_ueyes.py` + dashboard Streamlit). Coprono sia il confronto quantitativo (metriche aggregate e per-slice, per categoria UI) sia quello visivo qualitativo, per un numero di immagini arbitrario, non solo quelle tenute da parte a mano.
+
+#### Strumenti di valutazione e visualizzazione ✅ FATTO
+
+Due pezzi, pensati per essere usati **dopo** ogni training (baseline e, più avanti, modello fine-tuned):
+
+**`src/evaluate_ueyes.py`** — fa girare un checkpoint su tutto il validation set UEyes (108 immagini) e salva:
+- `results/<run_name>/metrics.csv`: una riga per immagine, con categoria UI (da `image_types.csv`), CC/KLDIV/NSS/SIM sulla mappa aggregata, CC/KLDIV per ciascuna delle 5 slice temporali
+- `results/<run_name>/predictions/*.png`: le mappe predette (aggregata + 5 slice), per il confronto visivo
+
+Uso: `python evaluate_ueyes.py --run_name baseline --model_path ./checkpoints/multilevel_tempsal.pt` (già eseguito sul checkpoint originale — vedi risultati sotto). Quando ci sarà il checkpoint fine-tuned, si rilancia con `--run_name finetuned --model_path <checkpoint fine-tuned>`; la dashboard rileva automaticamente tutte le cartelle dentro `results/`.
+
+**`src/dashboard/app.py`** — dashboard locale in Streamlit (`streamlit run app.py` dentro `src/dashboard/`), con 4 sezioni:
+1. **Metriche aggregate** — grafici a barre di CC/KLDIV/NSS/SIM, confronto tra run, opzionalmente suddivisi per categoria UI (web/desktop/mobile/poster)
+2. **Metriche per slice temporale** — grafico a linee di CC/KLDIV per ciascuno dei 5 intervalli, confronto tra run
+3. **Confronto qualitativo** — per un'immagine scelta da un menu: originale, ground truth, predizioni di ciascun run, sia per la mappa aggregata sia per le 5 slice
+4. **Distribuzione differenze** — istogramma dello scarto per-immagine tra due run scelti, con elenco delle 5 immagini più peggiorate (utile per trovare casi di fallimento da discutere in tesi)
+
+Filtri per categoria UI e per run nella barra laterale; export CSV dei dati filtrati (bottone dedicato) e PNG di ogni singolo grafico (dal menu ⋯ del grafico stesso, funzionalità nativa di Plotly).
+
+`results/` (come `data_ueyes/`) non è tracciata da git — è output generato, non va committata.
+
+**Verifica fatta**: lanciata `evaluate_ueyes.py` per davvero sul checkpoint originale (`baseline`), tutte le 108 immagini di validazione, nessun errore. Media sul validation set:
+
+| CC | KLDIV | NSS | SIM |
+|---|---|---|---|
+| 0.494 | 0.921 | 0.892 | 0.549 |
+
+Dashboard avviata (`streamlit run app.py --server.port 8765`) e interrogata con `curl` per confermare che risponda (HTTP 200); testata anche a parte, fuori da Streamlit, tutta la logica di caricamento/aggregazione dati (`groupby`, `pivot_table`, mappatura nomi file) contro il CSV reale — nessuna eccezione. Non potendo aprire un browser da qui, la resa visiva finale (layout, grafici) va comunque controllata di persona lanciando `streamlit run app.py` da `src/dashboard/`.
+
+**Per lanciarla**: `cd src/dashboard && streamlit run app.py` (apre automaticamente il browser su `localhost:8501`).
 
 ### Step 6 — Housekeeping tecnico prima di lanciare il training vero
 

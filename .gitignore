@@ -8,6 +8,8 @@ src/checkpoints/*
 # Downloaded / generated data
 /data/
 /data_ueyes/
+/results/
+/emergency_backup/
 *.zip
 
 # Test outputs (keep the folder, ignore generated predictions)

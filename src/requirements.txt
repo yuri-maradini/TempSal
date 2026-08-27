@@ -16,3 +16,6 @@ clip-anytorch==2.6.0
 kornia==0.8.3
 opencv-python==5.0.0.93
 scipy==1.18.0
+pandas==3.0.5
+streamlit==1.62.0
+plotly==7.0.0
