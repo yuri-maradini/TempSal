@@ -149,15 +149,44 @@ data_ueyes/
 - Metriche di validazione per-slice (`Vol CC: 0.38`, `Vol KLDIV: 1.36`) calcolate e loggate correttamente.
 - **Verifica più diretta**: confrontati tensore per tensore i pesi del checkpoint originale (`multilevel_tempsal.pt`) con quelli del checkpoint salvato dal test (file separato, non sovrascrive l'originale). Risultato: `pnas_vol` cambiato in 1394/1396 tensori (impara, come voluto), `pnas_sal` cambiato in **0/1394** tensori dopo il fix del BatchNorm (prima del fix: 603/1394 — confermando che il bug era reale), layer di mixing cambiati in 14/14 (sempre allenabili, comportamento invariato).
 
-**Nota per l'invocazione da riga di comando**: `--train_model` usa `type=bool` in argparse, che ha un comportamento controintuitivo — `--train_model False` viene comunque interpretato come `True` (qualunque stringa non vuota è truthy). Per attivare lo scongelamento di `pnas_vol` passare `--train_model 1`; per lasciarlo congelato, omettere del tutto il flag (il default è `False`). Non è un problema introdotto in questo step (il parametro esisteva già), ma vale la pena tenerlo a mente al momento di lanciare il training vero.
+**Nota per l'invocazione da riga di comando**: `--train_model` usa `type=bool` in argparse, che ha un comportamento controintuitivo — `--train_model False` viene comunque interpretato come `True` (qualunque stringa non vuota è truthy). Per attivare lo scongelamento di `pnas_vol` passare `--train_model 1`; per lasciarlo congelato, omettere del tutto il flag (il default è `False`). Non è un problema introdotto in questo step (il parametro esisteva già), ma vale la pena tenerlo a mente al momento di lanciare il training vero. Lo stesso vale per `--train_enc` (vedi correzione sotto).
+
+**Correzione successiva, trovata preparando lo Step 4**: `pnas_vol` non è un blocco unico — contiene sia un **intero backbone PNASNet** (milioni di parametri pre-addestrati) sia una piccola "testa" (`deconv_layer0..5`) che trasforma le sue feature nelle 5 slice temporali. Il fix originale dello Step 3 (`requires_grad = train_model` su *tutti* i parametri di `pnas_vol`) scongelava per errore **anche il backbone interno**, non solo la testa — esattamente il contrario di quanto pianificato per lo Step 4 ("congelare il backbone PNAS"). Corretto separando i due controlli in `model.py`: il backbone di `pnas_vol` è ora legato al parametro `train_enc` (riusando lo stesso flag `--train_enc` già esistente in `train.py`, finora collegato solo al modello `pnas` semplice), la testa resta legata a `train_model`. Trovato anche qui lo stesso bug BatchNorm già visto per `pnas_sal`: pur con `requires_grad=False`, le statistiche del backbone derivavano comunque quando non esplicitamente forzato in `.eval()` — corretto con lo stesso pattern.
+Verificato di nuovo con un confronto peso-per-peso: con `--train_model 1 --train_enc 0`, il backbone di `pnas_vol` risulta **0/1380 tensori cambiati** (davvero congelato), la sua testa **16/16 cambiati**, `pnas_sal` **0/1394**, il mixing **14/14** — esattamente il comportamento voluto.
+
+⚠️ **Da ricordare per il lancio vero**: `--train_enc` di default vale `1` (`True`) — pensato per l'altro branch del codice (`enc_model=pnas`), dove ha senso allenare tutto il backbone. Per il nostro caso (`pnas_boosted_multi`), **va passato esplicitamente `--train_enc 0`**, altrimenti si riallena per sbaglio l'intero backbone di `pnas_vol` invece della sola testa temporale.
 
 ### Step 4 — Strategia di fine-tuning
 
 - UEyes ha 1980 immagini totali, molte meno delle ~10000 di SALICON usate per il pre-training originale → rischio concreto di overfitting con un fine-tuning completo del backbone.
-- Raccomandazione: **congelare il backbone PNAS** (`train_enc=False`, come già previsto dal parametro esistente in `train.py`) e allenare solo: il ramo temporale scongelato (`pnas_vol`, se si segue la strada "temporale vero" descritta sopra) + i layer di mixing (`deconv_layer1..4`, `deconv_mix`, già allenabili di default).
-- Learning rate basso, coerente con un fine-tuning e non un training da zero (es. `1e-5`/`1e-6` — il default di `train.py` è già `1e-5`).
+- Raccomandazione: **congelare il backbone PNAS** (`--train_enc 0` — va passato esplicitamente, il default è `1`) e allenare solo: la testa del ramo temporale (`pnas_vol`, tramite `--train_model 1`) + i layer di mixing (`deconv_layer1..4`, `deconv_mix`, già allenabili di default).
+- Learning rate basso, coerente con un fine-tuning e non un training da zero (es. `1e-5`/`1e-6` — il default di `train.py` è già `1e-5`; il paper usa `1e-4` ma per un training da zero, non un fine-tuning).
 - Poche epoch vista la dimensione del dataset; monitorare overfitting confrontando train/val loss (già loggato su `wandb`).
 - Warm-start obbligatorio dal checkpoint esistente: `--model_path`/`--model_vol_path` puntati a `src/checkpoints/multilevel_tempsal.pt`.
+- `--model_val_path` deve puntare a un **file diverso** da `multilevel_tempsal.pt`, per non sovrascrivere il checkpoint originale (serve intatto come baseline di confronto).
+
+**Comando di lancio di riferimento** (da adattare sulla macchina con GPU):
+```bash
+python train.py \
+  --enc_model pnas_boosted_multi \
+  --dataset_dir ../data_ueyes/ \
+  --model_path ./checkpoints/multilevel_tempsal.pt \
+  --model_vol_path ./checkpoints/multilevel_tempsal.pt \
+  --train_model 1 \
+  --train_enc 0 \
+  --lr 1e-5 \
+  --batch_size 32 \
+  --no_epochs 10 \
+  --model_val_path ./checkpoints/multilevel_tempsal_ueyes.pt
+```
+(`--no_epochs 10` e `--lr 1e-5` sono punti di partenza ragionevoli, non valori definitivi — vanno rivisti guardando la curva di validazione durante il training.)
+
+**Checklist di migrazione verso la macchina con GPU**:
+- [ ] Codice: già su GitHub (`origin/main`, aggiornato), basta un `git clone`/`git pull`
+- [ ] Dati: decidere se trasferire `data_ueyes/` già pronto (più veloce da avviare, ma va copiato per intero — immagini + maps + fixation_maps + i due volumi da 5 slice) oppure rigenerarlo sul posto da `UEyes_dataset/` con `prepare_ueyes.py` + `generate_volumes_ueyes.py` (se `UEyes_dataset/` è disponibile anche lì)
+- [ ] Ambiente: reinstallare le dipendenze con una build di PyTorch **con supporto CUDA** (qui è stata installata la build CPU-only, non va bene per un training vero) — `pip install torch torchvision torchaudio` senza l'`--index-url` cpu usato qui, o secondo le istruzioni della macchina/cluster specifico
+- [ ] `wandb`: fare login (`wandb login`) se si vuole il logging vero, oppure impostare `WANDB_MODE=offline`/`disabled` come fatto nei test qui
+- [ ] Verificare che `data_ueyes/` sulla macchina di destinazione abbia lo stesso numero di file verificato qui (1872 train / 108 val per ciascuna delle 5 sottocartelle)
 
 ### Step 5 — Validazione e metriche
 

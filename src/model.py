@@ -206,7 +206,7 @@ class PNASVolModellast(nn.Module):
 
 class PNASBoostedModelMultiLevel(nn.Module):
 
-    def __init__(self, device, model_path, model_vol_path, time_slices, train_model=False, selected_slices=""):
+    def __init__(self, device, model_path, model_vol_path, time_slices, train_model=False, train_enc=False, selected_slices=""):
         super(PNASBoostedModelMultiLevel, self).__init__()
 
         
@@ -267,11 +267,21 @@ class PNASBoostedModelMultiLevel(nn.Module):
         model_vol.load_state_dict(vol_state_dict)
         self.pnas_vol = nn.DataParallel(model_vol).to(device)
 
-        # Only the temporal branch is tied to train_model: pnas_sal (final map)
-        # stays frozen regardless, so fine-tuning here only ever adapts the
-        # 5-slice temporal prediction, never the aggregate one.
-        for param in self.pnas_vol.parameters():
-            param.requires_grad = train_model
+        # pnas_vol bundles two very different things: a full PNASNet backbone
+        # (millions of pretrained parameters) and a small "head"
+        # (deconv_layer0..5) that turns its features into the 5 temporal
+        # slices. A blanket requires_grad=train_model would unfreeze the
+        # whole backbone too, not just the head -- far more parameters than
+        # intended, and a much bigger overfitting risk on a dataset as small
+        # as UEyes. Keep the two independently controllable, same as
+        # PNASModel already does for the plain "pnas" branch via --train_enc.
+        inner_vol = self.pnas_vol.module.module
+        for param in inner_vol.pnas.parameters():
+            param.requires_grad = train_enc
+        for head in (inner_vol.deconv_layer0, inner_vol.deconv_layer1, inner_vol.deconv_layer2,
+                     inner_vol.deconv_layer3, inner_vol.deconv_layer4, inner_vol.deconv_layer5):
+            for param in head.parameters():
+                param.requires_grad = train_model
 
 
         model = PNASModel(load_weight=0)

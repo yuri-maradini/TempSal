@@ -91,7 +91,7 @@ if args.enc_model == "pnas":
 elif args.enc_model == "pnas_boosted_multi":
     print("PNAS Boosted Model PNASBoostedModelMultiLevel")
     from model import PNASBoostedModelMultiLevel
-    model = PNASBoostedModelMultiLevel(device, args.model_path, args.model_vol_path, args.time_slices, train_model=args.train_model,selected_slices = args.selected_slices )
+    model = PNASBoostedModelMultiLevel(device, args.model_path, args.model_vol_path, args.time_slices, train_model=args.train_model, train_enc=bool(args.train_enc), selected_slices = args.selected_slices )
 
 
 if torch.cuda.device_count() > 1:
@@ -156,6 +156,13 @@ def train(model, optimizer, loader, epoch, device, args, use_vol):
         # learnable weights.
         base_model = model.module if hasattr(model, 'module') else model
         base_model.pnas_sal.eval()
+        if not bool(args.train_enc):
+            # Same issue, same fix, for pnas_vol's internal PNASNet backbone:
+            # requires_grad=train_enc (see model.py) blocks weight updates,
+            # not BatchNorm's running stats. Only force it to eval() when the
+            # backbone itself is meant to stay frozen -- if --train_enc is on,
+            # it should genuinely train, statistics included.
+            base_model.pnas_vol.module.module.pnas.eval()
 
     tic = time.time()
 
