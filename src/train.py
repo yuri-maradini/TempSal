@@ -244,7 +244,7 @@ def validate(model, loader, epoch, device, args, use_vol):
     wandb.log(log_dict)
     sys.stdout.flush()
 
-    return cc_loss.avg,cc_loss,kldiv_loss,nss_loss,sim_loss
+    return cc_loss.avg,cc_loss,kldiv_loss,nss_loss,sim_loss,vol_cc_loss,vol_kldiv_loss
 
 params = list(filter(lambda p: p.requires_grad, model.parameters()))
 
@@ -258,22 +258,32 @@ if args.lr_sched:
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=0.1)
 
 print(device)
-best_loss = 0
+best_score = 0
 for epoch in range(0, args.no_epochs):
     loss = train(model, optimizer, train_loader, epoch, device, args, use_vol)
 
     with torch.no_grad():
-                cc_loss,cc_loss_obj,kldiv_loss,nss_loss,sim_loss = validate(model, val_loader, epoch, device, args, use_vol)
-                cc_loss -=kldiv_loss.avg
+                cc_loss,cc_loss_obj,kldiv_loss,nss_loss,sim_loss,vol_cc_loss,vol_kldiv_loss = validate(model, val_loader, epoch, device, args, use_vol)
+                score = cc_loss - kldiv_loss.avg
+                if use_vol:
+                    # Fold the per-slice temporal metrics into the selection score too.
+                    # With only the aggregate CC/KLDIV, this could "freeze" on an early
+                    # checkpoint picked from a noisy small-val-set fluctuation while the
+                    # temporal branch -- the actual point of this model -- was still
+                    # improving every epoch.
+                    score += vol_cc_loss.avg - vol_kldiv_loss.avg
                 if epoch == 0 :
-                    best_loss = cc_loss
-                if best_loss <= cc_loss:
-                    best_loss = cc_loss
+                    best_score = score
+                if best_score <= score:
+                    best_score = score
                     print('[{:2d},  save, {}]'.format(epoch, args.model_val_path))
-                    wandb.log({"Best/CC mean": cc_loss,"Best/CC median": cc_loss_obj.get_median(), "Best/CC std": cc_loss_obj.get_std(),
+                    log_dict = {"Best/CC mean": cc_loss_obj.avg,"Best/CC median": cc_loss_obj.get_median(), "Best/CC std": cc_loss_obj.get_std(),
         "Best/KLD mean": kldiv_loss.avg,"Best/KLD median": kldiv_loss.get_median(), "Best/KLD std": kldiv_loss.get_std(),
         "Best/NSS mean": nss_loss.avg,"Best/NSS median": nss_loss.get_median(), "Best/NSS std": nss_loss.get_std(),
-        "Best/SIM mean": sim_loss.avg,"Best/SIM median": sim_loss.get_median(), "Best/SIM std": sim_loss.get_std()})
+        "Best/SIM mean": sim_loss.avg,"Best/SIM median": sim_loss.get_median(), "Best/SIM std": sim_loss.get_std()}
+                    if use_vol:
+                        log_dict.update({"Best/Vol CC mean": vol_cc_loss.avg, "Best/Vol KLD mean": vol_kldiv_loss.avg})
+                    wandb.log(log_dict)
                     if torch.cuda.device_count() > 1:
                         torch.save(model.module.state_dict(), args.model_val_path)
                     else:
