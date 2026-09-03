@@ -249,12 +249,31 @@ Conferma l'ipotesi dello Step 4.2: la mappa aggregata era già satura ~epoca 7-1
 
 **Segnale da tenere d'occhio**: la loss di training continua a scendere in modo lineare fino alla fine (−0.51 → −0.53 nelle ultime epoche) mentre le metriche di validazione restano piatte — sintomo tipico di inizio overfitting silenzioso (il modello continua ad adattarsi al training set senza più guadagno di generalizzazione). Non ancora dannoso (le metriche di val non peggiorano), ma indica che allenare ancora più a lungo con questi stessi iperparametri (solo testa di `pnas_vol` + layer di mixing allenabili, backbone di `pnas_vol` e tutto `pnas_sal` congelati) probabilmente non porta altro beneficio — il collo di bottiglia ora è la capacità allenabile del modello, non il numero di epoche.
 
-### Step 4.4 — Terza run: sblocco del backbone di `pnas_vol` (`--train_enc 1`) — 🔄 IN CORSO
+### Step 4.4 — Verifica indipendente di `v2` prima di procedere ✅ FATTO
 
-Alla luce dello Step 4.3 (plateau raggiunto su entrambi i rami con la capacità attuale), il passo naturale è risolvere la decisione aperta in sezione 3 ("scongelare `pnas_vol` per un fine-tuning vero, o tenerlo congelato") provando a sbloccare anche il backbone PNAS interno di `pnas_vol`, finora sempre congelato per design (vedi Step 3/4).
+Prima di costruirci sopra la run 3 (che cambia contemporaneamente warm-start, `train_enc` e learning rate), verificata la solidità di `multilevel_tempsal_ueyes_v2.pt` con una valutazione indipendente per-immagine su tutte le 108 immagini di validazione (`evaluate_ueyes.py --run_name finetuned_v2`), confrontata con `v1` sulla stessa metodologia già usata per la baseline:
+
+| Metrica | v1 (epoca 7) | v2 (epoca 18) | Delta |
+|---|---|---|---|
+| CC (aggregata) | 0.7179 | 0.7178 | ~0 (invariato) |
+| KLDIV (aggregata) | 0.4361 | 0.4354 | ~0 (invariato) |
+| NSS | 1.3106 | 1.2973 | −0.013 (rumore) |
+| SIM | 0.6605 | 0.6636 | +0.003 (rumore) |
+| Vol CC (media 5 slice) | 0.6074 | **0.6368** | **+4.8%** |
+| Vol KLDIV (media 5 slice) | 0.8494 | **0.7795** | **−8.2%** |
+
+Conferma quanto stimato dal log di training (Step 4.3): mappa aggregata invariata, ramo temporale migliorato in modo **uniforme su tutte le 5 slice** (non concentrato in una sola), più marcato sulle slice centrali (1-2-3, KLDIV −0.10/−0.11) che su quelle estreme. Per categoria: poster migliora chiaramente (CC 0.730→0.740), web resta piatto, mobile/desktop leggermente più bassi ma dentro il rumore.
+
+**Punto controllato con attenzione**: la deviazione standard di CC/KLDIV/NSS tra immagini è leggermente aumentata in `v2` (es. std CC 0.122→0.132), e un'immagine (`b44e33`, mobile) mostra un calo vistoso (CC 0.68→0.48). Ispezione visiva: le predizioni `v1` e `v2` per quell'immagine sono **quasi identiche a occhio** (stesso pattern a strisce verticali) — il crollo numerico è un artefatto della metrica CC su un pattern periodico a basso contrasto (molto sensibile a piccoli spostamenti relativi di intensità), non un vero peggioramento della predizione. Nessun altro caso preoccupante tra le immagini più penalizzate.
+
+**Conclusione**: nessun segnale che le 10 epoche aggiuntive abbiano danneggiato qualcosa — via libera per procedere con la run 3 partendo da questo checkpoint.
+
+### Step 4.5 — Terza run: sblocco del backbone di `pnas_vol` (`--train_enc 1`) — 🔄 IN CORSO
+
+Alla luce dello Step 4.3 (plateau raggiunto su entrambi i rami con la capacità attuale) e dello Step 4.4 (checkpoint `v2` verificato solido), il passo naturale è risolvere la decisione aperta in sezione 3 ("scongelare `pnas_vol` per un fine-tuning vero, o tenerlo congelato") provando a sbloccare anche il backbone PNAS interno di `pnas_vol`, finora sempre congelato per design (vedi Step 3/4).
 
 Notebook aggiornato di conseguenza:
-- Warm-start da `multilevel_tempsal_ueyes_v2.pt` (il miglior checkpoint finora), non dal checkpoint originale — la testa temporale è già ben adattata, l'esperimento isola l'effetto di sbloccare anche il backbone.
+- Warm-start da `multilevel_tempsal_ueyes_v2.pt` (il miglior checkpoint finora, verificato solido nello Step 4.4), non dal checkpoint originale — la testa temporale è già ben adattata, l'esperimento isola l'effetto di sbloccare anche il backbone.
 - `--train_enc 1` (sblocca il backbone di `pnas_vol`, finora sempre `0`).
 - `--lr 1e-6` (un ordine di grandezza più basso di prima: un backbone pre-addestrato con molti più parametri e un dataset piccolo — 1872 immagini — è molto più a rischio di overfitting/distruzione dei pesi pre-addestrati con un learning rate alto).
 - `--no_epochs 10` (poche epoche, stesso motivo).
@@ -310,7 +329,7 @@ Dashboard avviata (`streamlit run app.py --server.port 8765`) e interrogata con 
 - [x] ~~Estensione immagini mista e qualità fixation map~~ — risolto nello Step 1: loader esteso per estensioni miste, fixation map ricostruita da `eyetracker_logs/` invece che da `fixmaps_7s`.
 - [x] ~~Opzione A vs Opzione B per il volume di salienza temporale~~ — risolto nello Step 2: scelta l'Opzione A (bin disgiunti da 1s, fedeltà a TempSAL). Fissazioni oltre i 5s clippate nell'ultimo bin (non scartate), fissazioni a cavallo di un bin assegnate per intero al bin di `FPOGS`.
 - [x] ~~Dove eseguire il training vero~~ — risolto: Google Colab (GPU Tesla T4), via `src/train_ueyes_colab.ipynb`.
-- [ ] Scongelare `pnas_vol` (fine-tuning "vero" del ramo temporale) o lasciarlo congelato e allenare solo i layer di mixing (transfer learning più conservativo) — la testa (`train_model=1`, backbone congelato) è stata provata nelle Step 4.1/4.3 con buoni risultati fino a un plateau; lo sblocco del backbone (`train_enc=1`) è in corso nello Step 4.4.
+- [ ] Scongelare `pnas_vol` (fine-tuning "vero" del ramo temporale) o lasciarlo congelato e allenare solo i layer di mixing (transfer learning più conservativo) — la testa (`train_model=1`, backbone congelato) è stata provata nelle Step 4.1/4.3 con buoni risultati fino a un plateau; lo sblocco del backbone (`train_enc=1`) è in corso nello Step 4.5.
 - [ ] Resize con stretch (comportamento attuale) o con padding, per gli screenshot UI non quadrati — verificato nello Step 4.1 che non è la causa principale della debolezza sulla categoria "web" (mobile ha la distorsione più estrema ma il risultato migliore), quindi priorità bassa per ora.
 
 ---
