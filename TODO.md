@@ -188,6 +188,82 @@ python train.py \
 - [ ] `wandb`: fare login (`wandb login`) se si vuole il logging vero, oppure impostare `WANDB_MODE=offline`/`disabled` come fatto nei test qui
 - [ ] Verificare che `data_ueyes/` sulla macchina di destinazione abbia lo stesso numero di file verificato qui (1872 train / 108 val per ciascuna delle 5 sottocartelle)
 
+### Step 4.1 — Prima run di fine-tuning reale, 10 epoche (Colab, GPU) ✅ FATTO
+
+Eseguita su Google Colab (GPU Tesla T4) tramite il notebook `src/train_ueyes_colab.ipynb`, con il comando di riferimento sopra (`--no_epochs 10`, `WANDB_MODE=disabled` — nessuna curva salvata su wandb, i numeri per epoca sono stati recuperati dall'output della cella).
+
+Andamento per epoca (train loss, e su validation: CC/KLDIV/NSS/SIM sulla mappa aggregata, CC/KLDIV sul volume a 5 slice):
+
+| Epoca | Train loss | Val CC | Val KLDIV | Val NSS | Val SIM | Vol CC | Vol KLDIV | Salvato |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 0.617 | 0.655 | 0.505 | 1.162 | 0.622 | 0.479 | 1.115 | ✅ |
+| 1 | 0.166 | 0.686 | 0.470 | 1.207 | 0.641 | 0.533 | 1.010 | ✅ |
+| 2 | 0.032 | 0.698 | 0.456 | 1.222 | 0.650 | 0.559 | 0.960 | ✅ |
+| 3 | −0.047 | 0.707 | 0.444 | 1.231 | 0.655 | 0.575 | 0.928 | ✅ |
+| 4 | −0.104 | 0.713 | 0.437 | 1.242 | 0.658 | 0.588 | 0.901 | ✅ |
+| 5 | −0.154 | 0.720 | 0.430 | 1.256 | 0.663 | 0.597 | 0.885 | ✅ |
+| 6 | −0.196 | 0.717 | 0.433 | 1.236 | 0.657 | 0.606 | 0.861 | ❌ |
+| 7 | −0.237 | 0.725 | 0.423 | 1.285 | 0.665 | 0.613 | 0.839 | ✅ (ultimo salvataggio) |
+| 8 | −0.274 | 0.724 | 0.423 | 1.257 | 0.665 | 0.617 | 0.829 | ❌ |
+| 9 | −0.307 | 0.722 | 0.426 | 1.239 | 0.663 | 0.621 | 0.827 | ❌ |
+
+Il checkpoint effettivamente salvato (`multilevel_tempsal_ueyes.pt`) corrisponde quindi ai pesi dell'**epoca 7**, non dell'ultima epoca allenata — `train.py` salva solo quando il punteggio `CC - KLDIV` (sulla sola mappa aggregata) migliora rispetto al massimo storico, e dopo l'epoca 7 questo punteggio scende leggermente (rumore statistico: il validation set è solo 108 immagini, cioè **4 minibatch** con `batch_size=32`).
+
+**Valutazione indipendente** su tutto il validation set (`evaluate_ueyes.py --run_name finetuned --model_path checkpoints/multilevel_tempsal_ueyes.pt`, media per-immagine anziché per-batch): CC 0.718, KLDIV 0.436, NSS 1.311, SIM 0.661 — numeri vicinissimi a quelli loggati per l'epoca 7 (differenze di arrotondamento per la diversa aggregazione), buona verifica incrociata tra le due pipeline.
+
+Confronto con la baseline pre-fine-tuning (`multilevel_tempsal.pt`, mai visto UEyes): CC 0.494→0.718 (**+45%**), KLDIV 0.921→0.436 (**−53%**), NSS 0.892→1.311 (**+47%**), SIM 0.549→0.661 (**+20%**). Miglioramento netto e consistente su tutte e 4 le categorie UI (mobile la migliore, 0.533→0.802 CC; web la più debole, 0.461→0.639 CC), solo 5/108 immagini peggiorate (di pochissimo). Nessun overfitting rilevante: valutando anche un campione di 60 immagini di training, il gap train/val è piccolo (CC 0.747 train vs 0.718 val).
+
+**Analisi qualitativa** (ispezione visiva di predizioni + ground truth): il modello cattura bene le UI semplici a singolo focus (mobile, poster). Sulla categoria "web" (la più debole) il limite non è un problema di preprocessing — verificato che l'aspect ratio da solo non spiega la debolezza (mobile ha la distorsione da stretch più estrema di tutte, 0.56, eppure è la categoria migliore) — ma un mismatch strutturale: le pagine web hanno spesso più elementi ugualmente salienti (menu, griglie di card) o vengono lette seguendo la struttura logica della pagina, mentre il modello (bottom-up per costruzione) si aggancia al contrasto grafico più alto — es. immagine `c228a1`, dove la ground truth mostra attenzione su menu/lista articoli a sinistra ma il modello predice il picco più forte su un banner pubblicitario a destra.
+
+### Step 4.2 — Bug: il criterio di selezione del checkpoint ignorava il ramo temporale ✅ FATTO (corretto)
+
+Analizzando la tabella sopra: mentre CC/KLDIV/NSS/SIM sulla mappa aggregata si appiattiscono ed oscillano già dall'epoca 5-6 (plausibilmente solo rumore di campionamento su un validation set così piccolo), **le metriche per-slice (Vol CC/Vol KLDIV) migliorano in modo monotono per tutte le 10 epoche, senza segni di appiattimento**. Il criterio di salvataggio in `train.py` guardava però solo la mappa aggregata (`cc_loss - kldiv_loss.avg`), ignorando `Vol CC`/`Vol KLDIV` — cioè il ramo che è l'oggetto specifico di questo lavoro (temporal saliency "multilevel"). Risultato: il training si è fermato a salvare pur avendo il ramo temporale ancora in chiaro miglioramento.
+
+**Fix applicato in `src/train.py`**:
+- `validate()` ora ritorna anche `vol_cc_loss`/`vol_kldiv_loss` (prima venivano solo loggati su wandb, non restituiti al chiamante).
+- Il punteggio di selezione del "best checkpoint" diventa `(CC - KLDIV) + (Vol_CC - Vol_KLDIV)` quando il modello usa il ramo temporale (`use_vol=True`), invariato altrimenti (modello `pnas` semplice).
+- Corretto anche un bug di logging preesistente non collegato al problema principale: `wandb.log({"Best/CC mean": cc_loss, ...})` loggava per errore il punteggio combinato (dopo il riassegnamento `cc_loss -= kldiv_loss.avg`) invece del CC medio vero — ora usa `cc_loss_obj.avg`.
+
+**Verifica**: smoke test locale su CPU (mini-dataset di 4 immagini, batch_size 2, 2 epoche complete) — nessun errore, punteggio combinato calcolato e usato correttamente per decidere i salvataggi ad ogni epoca.
+
+Commit `Include temporal metrics in checkpoint selection; add first run's log` + push su `origin/main` — necessario perché il notebook Colab clona il codice da GitHub ad ogni run (`!git clone .../TempSal.git`), quindi le modifiche locali a `train.py` non hanno effetto finché non sono su `origin/main`.
+
+### Step 4.3 — Seconda run di fine-tuning, 20 epoche + wandb reale (Colab, GPU) ✅ FATTO
+
+Notebook aggiornato: `--no_epochs 20` (raddoppiato, dato che il ramo temporale non aveva ancora raggiunto un plateau), `--model_val_path` cambiato in `multilevel_tempsal_ueyes_v2.pt` (per non sovrascrivere il checkpoint della prima run), e **wandb attivato per davvero** (rimosso `WANDB_MODE=disabled`, eseguita la cella `wandb.login()`) — run `neat-aardvark-1` nel progetto `tempsal-ueyes`, prima volta con curve salvate invece di doverle leggere a mano dall'output della cella.
+
+Verifica del fix: ricalcolato a mano il punteggio combinato per tutte le 20 epoche — coincide esattamente con le righe "save" del log (salva alle epoche 0-10, 12-14, 16-18; **non** salva alle epoche 11, 15, 19). Il checkpoint finale (`multilevel_tempsal_ueyes_v2.pt`) corrisponde ai pesi dell'**epoca 18** (punteggio massimo).
+
+Confronto v1 (epoca 7, run da 10 epoche) vs v2 (epoca 18, run da 20 epoche), stessa metodologia (`validate()` di `train.py`):
+
+| Metrica | v1 (epoca 7) | v2 (epoca 18) | Variazione |
+|---|---|---|---|
+| CC (mappa aggregata) | 0.7247 | 0.7216 | −0.4% (rumore) |
+| KLDIV (mappa aggregata) | 0.4231 | 0.4262 | +0.7% (rumore) |
+| NSS | 1.2852 | 1.2458 | −3.1% (rumore) |
+| SIM | 0.6652 | 0.6661 | +0.1% (invariato) |
+| Vol CC (5 fasi temporali) | 0.6133 | **0.6359** | **+3.7%** |
+| Vol KLDIV (5 fasi temporali) | 0.8386 | **0.7734** | **−7.8%** |
+
+Conferma l'ipotesi dello Step 4.2: la mappa aggregata era già satura ~epoca 7-10 in entrambe le run (le differenze qui sono rumore statistico, non miglioramento reale), mentre il ramo temporale ha continuato a migliorare fino a stabilizzarsi solo verso l'epoca 16-18 (Vol CC nelle ultime 4 epoche: 0.636 → 0.637 → 0.636 → 0.637 — piatto, convergenza vera raggiunta stavolta, non un run interrotto a metà curva).
+
+**Segnale da tenere d'occhio**: la loss di training continua a scendere in modo lineare fino alla fine (−0.51 → −0.53 nelle ultime epoche) mentre le metriche di validazione restano piatte — sintomo tipico di inizio overfitting silenzioso (il modello continua ad adattarsi al training set senza più guadagno di generalizzazione). Non ancora dannoso (le metriche di val non peggiorano), ma indica che allenare ancora più a lungo con questi stessi iperparametri (solo testa di `pnas_vol` + layer di mixing allenabili, backbone di `pnas_vol` e tutto `pnas_sal` congelati) probabilmente non porta altro beneficio — il collo di bottiglia ora è la capacità allenabile del modello, non il numero di epoche.
+
+### Step 4.4 — Terza run: sblocco del backbone di `pnas_vol` (`--train_enc 1`) — 🔄 IN CORSO
+
+Alla luce dello Step 4.3 (plateau raggiunto su entrambi i rami con la capacità attuale), il passo naturale è risolvere la decisione aperta in sezione 3 ("scongelare `pnas_vol` per un fine-tuning vero, o tenerlo congelato") provando a sbloccare anche il backbone PNAS interno di `pnas_vol`, finora sempre congelato per design (vedi Step 3/4).
+
+Notebook aggiornato di conseguenza:
+- Warm-start da `multilevel_tempsal_ueyes_v2.pt` (il miglior checkpoint finora), non dal checkpoint originale — la testa temporale è già ben adattata, l'esperimento isola l'effetto di sbloccare anche il backbone.
+- `--train_enc 1` (sblocca il backbone di `pnas_vol`, finora sempre `0`).
+- `--lr 1e-6` (un ordine di grandezza più basso di prima: un backbone pre-addestrato con molti più parametri e un dataset piccolo — 1872 immagini — è molto più a rischio di overfitting/distruzione dei pesi pre-addestrati con un learning rate alto).
+- `--no_epochs 10` (poche epoche, stesso motivo).
+- `--model_val_path` → `multilevel_tempsal_ueyes_v3.pt`.
+
+Commit `Prepare third fine-tuning run: unfreeze pnas_vol's backbone` + push su `origin/main`.
+
+**Da fare dopo la run**: confrontare v3 con v2 sia sulla mappa aggregata sia (soprattutto) sul ramo temporale; controllare con più attenzione il gap train/val stavolta, dato il rischio di overfitting più alto con molti più parametri sbloccati.
+
 ### Step 5 — Validazione e metriche
 
 - ✅ `validate()` in `train.py` calcola già CC, KLDIV, NSS, SIM sulla mappa aggregata **e** CC/KLDIV per-slice (`Vol/CC`, `Vol/KLDIV`) sul volume temporale — fatto insieme allo Step 3.
@@ -233,9 +309,9 @@ Dashboard avviata (`streamlit run app.py --server.port 8765`) e interrogata con 
 
 - [x] ~~Estensione immagini mista e qualità fixation map~~ — risolto nello Step 1: loader esteso per estensioni miste, fixation map ricostruita da `eyetracker_logs/` invece che da `fixmaps_7s`.
 - [x] ~~Opzione A vs Opzione B per il volume di salienza temporale~~ — risolto nello Step 2: scelta l'Opzione A (bin disgiunti da 1s, fedeltà a TempSAL). Fissazioni oltre i 5s clippate nell'ultimo bin (non scartate), fissazioni a cavallo di un bin assegnate per intero al bin di `FPOGS`.
-- [ ] Scongelare `pnas_vol` (fine-tuning "vero" del ramo temporale) o lasciarlo congelato e allenare solo i layer di mixing (transfer learning più conservativo).
-- [ ] Resize con stretch (comportamento attuale) o con padding, per gli screenshot UI non quadrati.
-- [ ] Dove eseguire il training vero (serve una GPU: Colab, cluster universitario, altra macchina disponibile).
+- [x] ~~Dove eseguire il training vero~~ — risolto: Google Colab (GPU Tesla T4), via `src/train_ueyes_colab.ipynb`.
+- [ ] Scongelare `pnas_vol` (fine-tuning "vero" del ramo temporale) o lasciarlo congelato e allenare solo i layer di mixing (transfer learning più conservativo) — la testa (`train_model=1`, backbone congelato) è stata provata nelle Step 4.1/4.3 con buoni risultati fino a un plateau; lo sblocco del backbone (`train_enc=1`) è in corso nello Step 4.4.
+- [ ] Resize con stretch (comportamento attuale) o con padding, per gli screenshot UI non quadrati — verificato nello Step 4.1 che non è la causa principale della debolezza sulla categoria "web" (mobile ha la distorsione più estrema ma il risultato migliore), quindi priorità bassa per ora.
 
 ---
 
