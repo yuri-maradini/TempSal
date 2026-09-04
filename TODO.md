@@ -289,7 +289,44 @@ Commit `Prepare third fine-tuning run: unfreeze pnas_vol's backbone` + push su `
 
 Commit `Fix CUDA OOM on backbone unfreeze: add gradient accumulation to train.py` + push su `origin/main`.
 
-**Da fare dopo la run**: confrontare v3 con v2 sia sulla mappa aggregata sia (soprattutto) sul ramo temporale; controllare con più attenzione il gap train/val stavolta, dato il rischio di overfitting più alto con molti più parametri sbloccati.
+**Secondo tentativo: nessun errore, checkpoint `multilevel_tempsal_ueyes_v3.pt` salvato regolarmente**. Il notebook non era però stato salvato su GitHub dopo la run (persa la console), quindi il log epoca-per-epoca è stato recuperato **da wandb** via API (`api.run(".../runs/6cufifpm")` — il progetto era rimasto configurato con logging vero fin dallo Step 4.3, quindi i dati erano comunque sincronizzati in tempo reale nonostante il notebook non salvato).
+
+**Valutazione indipendente** su tutto il validation set (`evaluate_ueyes.py --run_name finetuned_v3`): CC 0.7097, KLDIV 0.4475, NSS 1.2764, SIM 0.6555, Vol CC medio 0.6230, Vol KLDIV medio 0.7933 — **peggiore di `v2` su ogni singola metrica** (CC 0.7178→0.7097, KLDIV 0.4354→0.4475, e tutte e 5 le slice temporali peggiorate in modo uniforme, non rumore). Solo 43/108 immagini migliorate. Prima lettura (sbagliata, poi corretta sotto): "lo sblocco del backbone non aiuta, `v2` resta la scelta migliore".
+
+**Correzione dopo aver recuperato la curva da wandb** — il quadro è più sfumato:
+
+| Epoca | Train loss | Val CC | Val KLDIV | Vol CC | Vol KLDIV | Salvato |
+|---|---|---|---|---|---|---|
+| 0 | −0.151 | 0.695 | 0.464 | 0.595 | 0.851 | ✅ |
+| 1 | −0.269 | 0.700 | 0.457 | 0.605 | 0.833 | ✅ |
+| 2 | −0.290 | 0.704 | 0.454 | 0.608 | 0.825 | ✅ |
+| 3 | −0.295 | 0.704 | 0.453 | 0.610 | 0.822 | ✅ |
+| 4 | −0.339 | 0.706 | 0.451 | 0.615 | 0.810 | ✅ |
+| 5 | −0.375 | 0.708 | 0.449 | 0.618 | 0.805 | ✅ |
+| 6 | −0.367 | 0.707 | 0.449 | 0.619 | 0.802 | ✅ |
+| 7 | −0.401 | 0.707 | 0.449 | 0.621 | 0.799 | ✅ |
+| 8 | −0.424 | 0.709 | 0.448 | 0.622 | 0.796 | ✅ |
+| 9 | −0.417 | 0.710 | 0.446 | 0.623 | 0.792 | ✅ |
+
+Il punteggio combinato è migliorato **ad ogni singola epoca** (salvato tutte le 10 volte, a differenza delle run 1/2) — il training era ancora chiaramente in salita, senza plateau, quando si è fermato. Il vero segnale è nell'epoca 0: **CC parte già a 0.695, sotto il livello di partenza di `v2` (0.718)** — un calo immediato, prima ancora che un solo gradiente utile potesse essere applicato in modo significativo. Causa identificata: `--train_enc 1` rimette il backbone in modalità `.train()`, quindi anche le sue statistiche BatchNorm (`running_mean`/`running_var`, fino a quel momento congelate sui valori di `v2`) ricominciano ad aggiornarsi automaticamente ad ogni immagine — **indipendentemente dal gradiente**, esattamente lo stesso meccanismo dei due bug BatchNorm già trovati e corretti nello Step 3, ma qui non ancora gestito per il caso "backbone sbloccato". Il resto della run è quindi in parte un recupero da questo contraccolpo auto-inflitto, non solo apprendimento vero.
+
+**Conclusione corretta**: la run 3 non dimostra che sbloccare il backbone sia sbagliato — dimostra solo che **10 epoche non sono bastate a recuperare dallo shock iniziale e superare `v2`**. Il trend era ancora chiaramente positivo e senza segni di overfitting (loss di training e metriche di validazione migliorano insieme, non in divergenza) alla decima epoca. Verdetto: **inconcludente**, non negativo — da citare in tesi come un esperimento che ha rivelato un effetto collaterale interessante (lo shock da BatchNorm) più che una risposta definitiva sulla strategia.
+
+Questo risultato resta comunque utile e va citato in tesi così com'è: mostra chiaramente l'effetto delle statistiche BatchNorm su un fine-tuning con backbone sbloccato, un dettaglio facilmente trascurabile.
+
+### Step 4.6 — Quarta run: backbone sbloccato con statistiche BatchNorm congelate — 🔄 IN CORSO
+
+Per isolare l'effetto trovato nello Step 4.5 (lo shock iniziale da BatchNorm, non l'apprendimento vero del backbone), corretto `src/train.py` così che i **pesi** del backbone di `pnas_vol` restino allenabili (`--train_enc 1`, invariato) ma le sue **statistiche interne di BatchNorm** (`running_mean`/`running_var`) restino congelate sui valori del checkpoint di warm-start, invece di aggiornarsi automaticamente ad ogni immagine come succede di default quando un modulo è in modalità `.train()`.
+
+**Fix in `src/train.py`**: nuova funzione `freeze_batchnorm_stats(module)` — itera su tutti i sottomoduli e forza in `.eval()` ogni layer `BatchNorm1d/2d/3d` trovato. Chiamata su `pnas_vol`'s backbone quando `--train_enc 1` (ramo `else` accanto al blocco già esistente per `--train_enc 0`). Non tocca `requires_grad`: i pesi propri di ogni BatchNorm (`weight`/`bias`, i suoi parametri allenabili) continuano ad aggiornarsi via gradiente normalmente, cambia solo se il layer usa le statistiche correnti del batch (modalità training) o quelle salvate (modalità eval) per la normalizzazione. **Nessun nuovo argomento da riga di comando**: il comportamento è legato automaticamente a `--train_enc`, quindi il comando di lancio è identico a quello della run 3.
+
+**Verifica**: smoke test locale su CPU (mini-dataset di 4 immagini, warm-start da `multilevel_tempsal_ueyes_v2.pt`, `--train_enc 1`, 2 epoche) — nessun errore; confronto peso-per-peso tra checkpoint prima/dopo conferma il comportamento voluto: le statistiche del backbone (`running_mean`/`running_var`/`num_batches_tracked`) restano **0/603 invariate**, mentre i suoi pesi (convoluzioni + `weight`/`bias` dei BatchNorm) cambiano **775/777** — imparano normalmente, solo le statistiche restano fisse.
+
+Notebook aggiornato: stesso comando della run 3 (`--model_path`/`--model_vol_path` su `v2`, `--train_enc 1`, `--lr 1e-6`, `--batch_size 16 --grad_accum_steps 2`, `--no_epochs 10`), solo `--model_val_path` cambiato in `multilevel_tempsal_ueyes_v4.pt`.
+
+Commit `Freeze backbone BatchNorm running stats when unfreezing pnas_vol (train_enc=1)` + push su `origin/main`.
+
+**Da controllare dopo la run**: se l'epoca 0 parte vicino al livello di `v2` invece che sotto (conferma che il fix ha eliminato il contraccolpo iniziale visto nello Step 4.5), e se il modello riesce stavolta a superare `v2` entro le 10 epoche — questo darebbe finalmente un verdetto pulito sulla decisione aperta "vale la pena sbloccare il backbone?".
 
 ### Step 5 — Validazione e metriche
 

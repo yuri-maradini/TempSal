@@ -145,6 +145,18 @@ def vol_loss_func(vol_pred, vol_gt, args):
             loss += args.cc_coeff * cc(vol_pred[:, t], vol_gt[:, t])
     return loss / vol_pred.size(1)
 
+def freeze_batchnorm_stats(module):
+    # Puts every BatchNorm submodule into eval() so its running_mean/running_var
+    # stop drifting, without touching requires_grad on anything -- weights
+    # (including a BatchNorm layer's own learnable affine weight/bias) still
+    # receive gradients normally. Used to unfreeze a pretrained backbone's
+    # weights (--train_enc 1) while keeping its normalization statistics
+    # pinned to the warm-start checkpoint's values.
+    for m in module.modules():
+        if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            m.eval()
+
+
 def train(model, optimizer, loader, epoch, device, args, use_vol):
     model.train()
     if use_vol:
@@ -164,6 +176,17 @@ def train(model, optimizer, loader, epoch, device, args, use_vol):
             # backbone itself is meant to stay frozen -- if --train_enc is on,
             # it should genuinely train, statistics included.
             base_model.pnas_vol.module.module.pnas.eval()
+        else:
+            # train_enc=1 unfreezes the backbone's weights, but leaving it in
+            # train() mode also lets its BatchNorm running stats start
+            # drifting from whatever the warm-start checkpoint had settled
+            # into -- before the weights have learned anything useful. Found
+            # empirically (Step 4.5 in TODO.md): the very first epoch of the
+            # backbone-unfreeze run scored below the warm-start checkpoint's
+            # own validation score, and it took the whole run just to climb
+            # back toward it. Freezing only the running stats (not the
+            # weights) removes that self-inflicted shock.
+            freeze_batchnorm_stats(base_model.pnas_vol.module.module.pnas)
 
     tic = time.time()
 
