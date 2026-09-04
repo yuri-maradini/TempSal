@@ -281,6 +281,14 @@ Notebook aggiornato di conseguenza:
 
 Commit `Prepare third fine-tuning run: unfreeze pnas_vol's backbone` + push su `origin/main`.
 
+**Primo tentativo: `CUDA out of memory` sulla T4 di Colab**. Con `train_enc=1` PyTorch deve conservare le attivazioni di backprop dell'intero backbone PNASNet di `pnas_vol` (prima congelato, quindi non tracciato da autograd), non solo della piccola testa come nelle run 1/2 — a parità di `--batch_size 32`, la memoria richiesta sale molto. La T4 (~14.56 GiB utilizzabili) è andata OOM per un margine minimo: `torch.OutOfMemoryError: ... Tried to allocate 68.00 MiB ... 13.81 MiB is free`.
+
+**Fix**: aggiunta la **gradient accumulation** a `src/train.py` — nuovo argomento `--grad_accum_steps` (default `1`, quindi comportamento identico alle run precedenti). Il loop di training ora chiama `optimizer.step()`/`zero_grad()` ogni `grad_accum_steps` micro-batch invece che ad ogni batch, scalando la loss passata a `.backward()` di conseguenza (la loss loggata resta quella "vera", non scalata). Run 3 rilanciata con `--batch_size 16 --grad_accum_steps 2`: batch size *effettivo* per l'ottimizzatore invariato (32, come le run 1/2, per un confronto equo), ma memoria per singolo forward/backward dimezzata. Aggiunto anche `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` alla cella di training come margine extra contro la frammentazione.
+
+**Verifica**: smoke test locale su CPU (mini-dataset di 4 immagini, `--train_enc 1 --batch_size 2 --grad_accum_steps 2`, 2 epoche) — nessun errore; confronto peso-per-peso col checkpoint originale conferma che ora il backbone di `pnas_vol` cambia davvero (1378/1380 tensori, i 2 invariati sono verosimilmente buffer non allenabili come `num_batches_tracked`), mentre `pnas_sal` resta congelato (0/1394) esattamente come nelle run precedenti.
+
+Commit `Fix CUDA OOM on backbone unfreeze: add gradient accumulation to train.py` + push su `origin/main`.
+
 **Da fare dopo la run**: confrontare v3 con v2 sia sulla mappa aggregata sia (soprattutto) sul ramo temporale; controllare con più attenzione il gap train/val stavolta, dato il rischio di overfitting più alto con molti più parametri sbloccati.
 
 ### Step 5 — Validazione e metriche

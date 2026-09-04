@@ -45,6 +45,7 @@ parser.add_argument('--train_enc',default=1, type=int)
 
 parser.add_argument('--dataset_dir',default="../data/", type=str)
 parser.add_argument('--batch_size',default=32, type=int)
+parser.add_argument('--grad_accum_steps',default=1, type=int)
 parser.add_argument('--log_interval',default=60, type=int)
 parser.add_argument('--no_workers',default=4, type=int)
 parser.add_argument('--train_model',default=False, type=bool)
@@ -169,6 +170,15 @@ def train(model, optimizer, loader, epoch, device, args, use_vol):
     total_loss = 0.0
     cur_loss = 0.0
 
+    # Gradient accumulation: with --train_enc 1 the whole pnas_vol backbone
+    # needs its activations kept around for backward, not just the small
+    # head -- at the same --batch_size that fit comfortably when the
+    # backbone was frozen, this can (and did, on a 15GB T4) blow the GPU
+    # budget. Accumulating over --grad_accum_steps micro-batches keeps the
+    # optimizer's effective batch size unchanged (batch_size * grad_accum_steps)
+    # while capping the per-forward-pass memory to a single micro-batch.
+    # Default of 1 makes this a no-op, identical to the original loop.
+    optimizer.zero_grad()
     for idx, batch in enumerate(loader):
         if use_vol:
             img, gt, fixations, vol = batch
@@ -179,20 +189,22 @@ def train(model, optimizer, loader, epoch, device, args, use_vol):
         gt = gt.to(device)
         fixations = fixations.to(device)
 
-        optimizer.zero_grad()
         pred_map, vol_pred = model(img)
 
         assert pred_map.size() == gt.size()
 
-        loss = loss_func(pred_map, gt, fixations, args)
+        raw_loss = loss_func(pred_map, gt, fixations, args)
         if use_vol:
-            loss = loss + args.vol_loss_coeff * vol_loss_func(vol_pred, vol, args)
-        loss.backward()
+            raw_loss = raw_loss + args.vol_loss_coeff * vol_loss_func(vol_pred, vol, args)
+        (raw_loss / args.grad_accum_steps).backward()
 
-        total_loss += loss.item()
-        cur_loss += loss.item()
+        total_loss += raw_loss.item()
+        cur_loss += raw_loss.item()
 
-        optimizer.step()
+        if (idx + 1) % args.grad_accum_steps == 0 or (idx + 1) == len(loader):
+            optimizer.step()
+            optimizer.zero_grad()
+
         if idx%args.log_interval==(args.log_interval-1):
             print('[{:2d}, {:5d}] avg_loss : {:.5f}, time:{:3f} minutes'.format(epoch, idx, cur_loss/args.log_interval, (time.time()-tic)/60))
             wandb.log({"loss": cur_loss/args.log_interval})
