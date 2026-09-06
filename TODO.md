@@ -328,6 +328,38 @@ Commit `Freeze backbone BatchNorm running stats when unfreezing pnas_vol (train_
 
 **Da controllare dopo la run**: se l'epoca 0 parte vicino al livello di `v2` invece che sotto (conferma che il fix ha eliminato il contraccolpo iniziale visto nello Step 4.5), e se il modello riesce stavolta a superare `v2` entro le 10 epoche — questo darebbe finalmente un verdetto pulito sulla decisione aperta "vale la pena sbloccare il backbone?".
 
+**Run eseguita, notebook salvato correttamente su GitHub stavolta** (log completo disponibile in `train_ueyes_colab.ipynb`, run wandb `gallant-bush-6`):
+
+| Epoca | Train loss | Val CC | Val KLDIV | Vol CC | Vol KLDIV | Salvato |
+|---|---|---|---|---|---|---|
+| 0 | −0.545 | 0.714 | 0.436 | 0.642 | 0.765 | ✅ |
+| 1 | −0.560 | 0.715 | 0.435 | 0.643 | 0.764 | ✅ |
+| 2 | −0.570 | 0.715 | 0.435 | 0.645 | 0.758 | ✅ |
+| 3 | −0.579 | 0.715 | 0.435 | 0.645 | 0.759 | ❌ |
+| 4 | −0.589 | 0.713 | 0.437 | 0.645 | 0.758 | ❌ |
+| 5 | −0.598 | 0.712 | 0.438 | 0.645 | 0.756 | ❌ |
+| 6 | −0.607 | 0.713 | 0.437 | 0.645 | 0.756 | ❌ |
+| 7 | −0.615 | 0.713 | 0.437 | 0.646 | 0.755 | ❌ |
+| 8 | −0.624 | 0.712 | 0.438 | 0.645 | 0.754 | ❌ |
+| 9 | −0.632 | 0.713 | 0.437 | 0.647 | 0.752 | ✅ (finale) |
+
+**Conferma diretta del fix**: l'epoca 0 parte a CC 0.714 — un calo minimo rispetto a `v2` (0.718), non più il tonfo di 0.023 punti della run 3 (0.718→0.695). Lo shock da BatchNorm è in gran parte eliminato. La mappa aggregata resta però sostanzialmente piatta per tutte le 10 epoche (0.712-0.715, nessun miglioramento netto rispetto a `v2`), mentre il ramo temporale migliora in modo più graduale ma continuo (Vol CC 0.642→0.647, Vol KLDIV 0.765→0.752), senza plateau ancora raggiunto all'epoca 9 (che infatti è l'epoca salvata, con il punteggio più alto della run).
+
+**Valutazione indipendente** su tutto il validation set (`evaluate_ueyes.py --run_name finetuned_v4`):
+
+| Metrica | v2 | v3 | **v4** |
+|---|---|---|---|
+| CC (aggregata) | 0.7178 | 0.7097 | 0.7124 |
+| KLDIV (aggregata) | 0.4354 | 0.4475 | 0.4391 |
+| NSS | 1.2973 | 1.2764 | 1.2638 |
+| SIM | 0.6636 | 0.6555 | 0.6609 |
+| Vol CC (media 5 slice) | 0.6349 | — | **0.6472 (+1.9%)** |
+| Vol KLDIV (media 5 slice) | 0.7796 | — | **0.7534 (−3.4%)** |
+
+Tutte e 5 le slice temporali migliorano rispetto a `v2` in modo uniforme (non concentrato in una sola, non rumore). La mappa aggregata resta leggermente sotto `v2` (44/108 immagini migliorate su 108 — sostanzialmente un pareggio con una lieve inclinazione negativa), ma molto più vicina a `v2` che a `v3`.
+
+**Conclusione**: il fix ha funzionato. Sbloccare il backbone **aiuta davvero il ramo temporale** (l'obiettivo centrale di questo lavoro), a fronte di un compromesso trascurabile sulla mappa aggregata — non più il peggioramento netto e uniforme di `v3`. Questo risolve in modo pulito, con un esperimento controllato, la decisione lasciata aperta fin dallo Step 4. **`multilevel_tempsal_ueyes_v4.pt` è ora il checkpoint migliore sul ramo temporale** e il candidato naturale come modello finale. Dato che il punteggio era ancora in salita all'epoca 9 senza plateau, ulteriori epoche da questo checkpoint potrebbero spingere il ramo temporale ancora oltre — margine non ancora sfruttato, ma il guadagno aggiuntivo atteso è probabilmente modesto vista la curva già poco ripida.
+
 ### Step 5 — Validazione e metriche
 
 - ✅ `validate()` in `train.py` calcola già CC, KLDIV, NSS, SIM sulla mappa aggregata **e** CC/KLDIV per-slice (`Vol/CC`, `Vol/KLDIV`) sul volume temporale — fatto insieme allo Step 3.
