@@ -363,6 +363,16 @@ Dashboard avviata (`streamlit run app.py --server.port 8765`) e interrogata con 
 
 **Per lanciarla**: `cd src/dashboard && streamlit run app.py` (apre automaticamente il browser su `localhost:8501`).
 
+#### Analisi center-bias ✅ FATTO
+
+Verifica quantitativa di un'osservazione qualitativa: il modello baseline (allenato solo su SALICON, foto naturali) sembrava concentrare la salienza vicino al centro dell'immagine indipendentemente dal contenuto, un artefatto noto in letteratura sulla saliency (le foto naturali hanno tipicamente il soggetto centrato per convenzione fotografica, e i modelli imparano questo prior posizionale oltre al contenuto). Le UI screenshot di UEyes non seguono questa convenzione compositiva, quindi è lecito aspettarsi che il fine-tuning attenui questo bias.
+
+Nuovo script **`src/analyze_center_bias.py`**: per ciascun run già valutato (`results/<run>/predictions/*_agg.png`), calcola il centroide pesato dall'intensità di ogni mappa di salienza predetta e la sua distanza dal centro dell'immagine (normalizzata, 0 = centro esatto); confronta baseline vs le tre run fine-tuned, e contro il centroide della ground truth reale. Calcola anche la **mappa media** sulle 108 immagini di validazione (visualizzazione standard per il center-bias: il contenuto specifico di ogni immagine si media via, un bias posizionale sistematico no).
+
+**Risultato**: distanza media dal centro — baseline 0.089, fine-tuned (v1/v2/v3) 0.152-0.154, ground truth 0.164. Il fine-tuning sposta quindi la predizione dal ~54% al ~94% della distanza "vera" (quella della ground truth), un effetto consistente su singola immagine (nell'88.9% delle 108 immagini di validazione la predizione fine-tuned è più lontana dal centro della baseline, identico per tutte e 3 le run fine-tuned) e su tutte e 4 le categorie UI. La mappa media conferma visivamente: baseline = macchia quasi simmetrica centrata sull'immagine; fine-tuned e ground truth = entrambe spostate/allungate nella stessa direzione (verso l'alto-sinistra), pattern simile tra loro e diverso dal baseline.
+
+Output: `results/presentation/center_bias_average_maps.png` (non tracciato da git, generato — rilanciare lo script dopo la valutazione di `v4` per includerla nel confronto).
+
 ### Step 6 — Housekeeping tecnico prima di lanciare il training vero
 
 - Patchare i restanti `.cuda()` fissi (`loss.py:95-96`, `generate_volumes.py:29`, `train.py:103`) con lo stesso pattern `.to(device)` già usato in `model.py`, **solo se** si prevede di eseguire/debuggare anche solo in parte il training su questa macchina CPU-only. Se il training vero e proprio girerà su una macchina con GPU (es. Colab, cluster universitario), questo passaggio non è strettamente necessario ma resta comunque una buona idea per poter testare la pipeline dati in locale prima di lanciare run costose altrove.
