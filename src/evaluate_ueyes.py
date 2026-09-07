@@ -19,7 +19,7 @@ from torchvision.utils import save_image
 from tqdm import tqdm
 
 from dataloader import SaliconDataset
-from loss import cc, kldiv, nss, similarity
+from loss import cc, kldiv, nss, similarity, auc_judd
 from model import PNASBoostedModelMultiLevel
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -89,6 +89,7 @@ def main():
                 'KLDIV': kldiv(pred_map, gt_b).item(),
                 'NSS': nss(pred_map, fix_b).item(),
                 'SIM': similarity(pred_map, gt_b).item(),
+                'AUC_Judd': float(auc_judd(pred_map, fix_b)),
             }
             for t in range(args.time_slices):
                 row[f'Vol_CC_{t}'] = cc(vol_pred[:, t], vol_b[:, t]).item()
@@ -103,7 +104,7 @@ def main():
     csv_path = os.path.join(out_dir, 'metrics.csv')
     df.to_csv(csv_path, index=False)
     print(f"\nSalvato {csv_path} ({len(df)} righe)")
-    print(df[['CC', 'KLDIV', 'NSS', 'SIM']].mean())
+    print(df[['CC', 'KLDIV', 'NSS', 'SIM', 'AUC_Judd']].mean())
 
 
 if __name__ == '__main__':

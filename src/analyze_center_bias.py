@@ -29,12 +29,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(SCRIPT_DIR, '..', 'results')
 GT_DIR = os.path.join(SCRIPT_DIR, '..', 'data_ueyes', 'maps', 'val')
 
-RUNS = ['baseline', 'finetuned', 'finetuned_v2', 'finetuned_v3']
+RUNS = ['baseline', 'finetuned', 'finetuned_v2', 'finetuned_v3', 'finetuned_v4']
 RUN_LABELS = {
     'baseline': 'Baseline (solo SALICON)',
     'finetuned': 'Fine-tuned v1',
     'finetuned_v2': 'Fine-tuned v2',
     'finetuned_v3': 'Fine-tuned v3',
+    'finetuned_v4': 'Fine-tuned v4',
     'ground_truth': 'Ground truth (UEyes)',
 }
 SIZE = 256
@@ -169,9 +170,9 @@ def main():
 
     # figure: baseline vs best available fine-tuned run vs ground truth
     panels = [('baseline', 'Baseline (solo SALICON)')]
-    for r in ('finetuned_v3', 'finetuned_v2', 'finetuned'):
+    for r in ('finetuned_v4', 'finetuned_v3', 'finetuned_v2', 'finetuned'):
         if r in avgmap_by_run:
-            panels.append((r, f'Fine-tuned ({r}, UEyes)'))
+            panels.append((r, f'{RUN_LABELS.get(r, r)} (UEyes)'))
             break
     panels.append(('gt', 'Ground truth (UEyes)'))
 

@@ -2,6 +2,10 @@ import torch
 import numpy as np
 import cv2
 
+# np.trapz was removed in NumPy 2.0 (renamed to np.trapezoid); this codebase's
+# auc_judd/auc_shuff were apparently never run against a NumPy this new before.
+_trapz = getattr(np, 'trapezoid', None) or np.trapz
+
 def kldiv(s_map, gt):
     batch_size = s_map.size(0)
     w = s_map.size(1)
@@ -178,7 +182,7 @@ def auc_judd(saliencyMap, fixationMap, jitter=True, normalize=False):
         fp[i + 1] = float(aboveth - i) / (Npixels - Nfixations)  # ratio other sal map values
         # above threshold
 
-    score = np.trapz(tp, x=fp)
+    score = _trapz(tp, x=fp)
     allthreshes = np.insert(allthreshes, 0, 0)
     allthreshes = np.append(allthreshes, 1)
 
@@ -251,6 +255,6 @@ def auc_shuff(s_map,gt,other_map,splits=100,stepsize=0.1):
         tp_list =  [x[0] for x in area]
         fp_list =  [x[1] for x in area]
 
-        aucs.append(np.trapz(np.array(tp_list),np.array(fp_list)))
+        aucs.append(_trapz(np.array(tp_list),np.array(fp_list)))
 
     return np.mean(aucs)
