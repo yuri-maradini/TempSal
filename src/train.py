@@ -19,6 +19,7 @@ from PIL import Image
 parser = argparse.ArgumentParser()
 parser.add_argument('--no_epochs',default=30, type=int)
 parser.add_argument('--lr',default=1e-5, type=float)
+parser.add_argument('--mixing_lr',default=None, type=float, help='LR separato per deconv_layer1..4/deconv_mix; default = --lr')
 parser.add_argument('--kldiv',default=True, type=bool)
 parser.add_argument('--cc',default=True, type=bool)
 parser.add_argument('--nss',default=False, type=bool)
@@ -281,14 +282,40 @@ def validate(model, loader, epoch, device, args, use_vol):
 
     return cc_loss.avg,cc_loss,kldiv_loss,nss_loss,sim_loss,vol_cc_loss,vol_kldiv_loss
 
-params = list(filter(lambda p: p.requires_grad, model.parameters()))
+# The mixing decoder (deconv_layer1..4 + deconv_mix on PNASBoostedModelMultiLevel
+# itself) is always trainable, regardless of --train_enc/--train_model, but it
+# consumes pnas_vol's temporal predictions as part of its own input (see
+# model.py's forward()) -- when pnas_vol's backbone is unfrozen (--train_enc 1),
+# that input distribution shifts under it. A single shared --lr forces it to
+# recalibrate at the same glacial pace as the newly-unfrozen backbone; a
+# separate --mixing_lr lets it track the shift faster. Defaults to --lr
+# (identical behaviour to every previous run) when not passed explicitly.
+_MIXING_PREFIXES = ('deconv_layer1', 'deconv_layer2', 'deconv_layer3', 'deconv_layer4', 'deconv_mix')
+
+def _is_mixing_param(name):
+    n = name[len('module.'):] if name.startswith('module.') else name
+    return n.startswith(_MIXING_PREFIXES)
+
+mixing_params, other_params = [], []
+for name, p in model.named_parameters():
+    if not p.requires_grad:
+        continue
+    (mixing_params if _is_mixing_param(name) else other_params).append(p)
+
+mixing_lr = args.mixing_lr if args.mixing_lr is not None else args.lr
+param_groups = [
+    {'params': other_params, 'lr': args.lr},
+    {'params': mixing_params, 'lr': mixing_lr},
+]
+print(f'Optimizer param groups: {len(other_params)} tensori a lr={args.lr}, '
+      f'{len(mixing_params)} tensori (mixing decoder) a lr={mixing_lr}')
 
 if args.optim=="Adam":
-    optimizer = torch.optim.Adam(params, lr=args.lr)
+    optimizer = torch.optim.Adam(param_groups)
 if args.optim=="Adagrad":
-    optimizer = torch.optim.Adagrad(params, lr=args.lr)
+    optimizer = torch.optim.Adagrad(param_groups)
 if args.optim=="SGD":
-    optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9)
+    optimizer = torch.optim.SGD(param_groups, momentum=0.9)
 if args.lr_sched:
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=0.1)
 

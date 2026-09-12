@@ -360,6 +360,42 @@ Tutte e 5 le slice temporali migliorano rispetto a `v2` in modo uniforme (non co
 
 **Conclusione**: il fix ha funzionato. Sbloccare il backbone **aiuta davvero il ramo temporale** (l'obiettivo centrale di questo lavoro), a fronte di un compromesso trascurabile sulla mappa aggregata — non più il peggioramento netto e uniforme di `v3`. Questo risolve in modo pulito, con un esperimento controllato, la decisione lasciata aperta fin dallo Step 4. **`multilevel_tempsal_ueyes_v4.pt` è ora il checkpoint migliore sul ramo temporale** e il candidato naturale come modello finale. Dato che il punteggio era ancora in salita all'epoca 9 senza plateau, ulteriori epoche da questo checkpoint potrebbero spingere il ramo temporale ancora oltre — margine non ancora sfruttato, ma il guadagno aggiuntivo atteso è probabilmente modesto vista la curva già poco ripida.
 
+### Step 4.7 — Quinta run: più epoche + learning rate differenziato sul mixing decoder — 🔄 IN CORSO
+
+Motivazione (vedi anche slide S14 in `results/presentation/slides.md`): in v4 il ramo temporale migliora ma la mappa aggregata resta leggermente sotto `v2`. Ipotesi mai testata finora: il decoder di mixing (`deconv_layer1..4` + `deconv_mix` su `PNASBoostedModelMultiLevel`, sempre allenabile in tutte le run) riceve come input anche le slice temporali prodotte da `pnas_vol`, che in v4 sono cambiate — ma il decoder si allena alla stessa velocità lentissima (`lr=1e-6`) del backbone appena sbloccato, e potrebbe non aver ancora fatto in tempo a recalibrarsi.
+
+**Decisione di disegno sperimentale**: invece di testare "più epoche" e "learning rate differenziato sul mixing" in due run separate e sequenziali, si fanno **insieme in un'unica run**. Motivo: cambiare due variabili in due run distinte impedirebbe di isolare quale delle due abbia causato un eventuale miglioramento — la stessa disciplina "una variabile alla volta" seguita per tutte le run precedenti (v1→v2 solo epoche, v2→v3 solo `train_enc`, v3→v4 solo il fix BatchNorm) verrebbe persa. Non c'è inoltre un vero motivo tecnico per sequenziarle: il decoder di mixing può rincorrere via gradiente le slice temporali mentre continuano a cambiare, non deve aspettare che "finiscano" di migliorare.
+
+**Modifica a `src/train.py`**: nuovo argomento `--mixing_lr` (default `None` → ricade su `--lr`, comportamento identico a tutte le run precedenti). L'ottimizzatore ora costruisce due gruppi di parametri via `named_parameters()`, isolando `deconv_layer1`, `deconv_layer2`, `deconv_layer3`, `deconv_layer4`, `deconv_mix` (il decoder di mixing, sempre in cima al modello, da non confondere con `pnas_vol`'s `deconv_layer0..5` interni che hanno lo stesso nome ma prefisso diverso nel path dei parametri) nel gruppo "mixing", tutto il resto (che abbia `requires_grad=True`) nel gruppo "altro". Funziona con tutti e tre gli optimizer supportati (`Adam`/`Adagrad`/`SGD`), passando una lista di *parameter group* invece di un'unica lista piatta.
+
+**Verifica locale su CPU** (mini-dataset, warm-start da `multilevel_tempsal_ueyes_v4.pt`, `--train_enc 1 --mixing_lr 1e-4`): l'ottimizzatore stampa `793 tensori a lr=1e-06, 14 tensori (mixing decoder) a lr=0.0001` — il conteggio di **14 tensori** nel gruppo mixing coincide esattamente con la verifica peso-per-peso già fatta nello Step 3 (`deconv_layer1..4` + `deconv_mix` = 14 tensori allenabili, sempre). Verificata anche la retrocompatibilità: senza passare `--mixing_lr`, entrambi i gruppi ricadono sullo stesso learning rate — nessuna run passata risulta invalidata da questa modifica.
+
+**Comando per la run reale** (notebook `src/train_ueyes_colab.ipynb` aggiornato di conseguenza):
+```bash
+python train.py \
+  --enc_model pnas_boosted_multi \
+  --dataset_dir ../data_ueyes/ \
+  --model_path ./checkpoints/multilevel_tempsal_ueyes_v4.pt \
+  --model_vol_path ./checkpoints/multilevel_tempsal_ueyes_v4.pt \
+  --train_model 1 \
+  --train_enc 1 \
+  --lr 1e-6 \
+  --mixing_lr 1e-5 \
+  --batch_size 16 \
+  --grad_accum_steps 2 \
+  --no_epochs 20 \
+  --model_val_path ./checkpoints/multilevel_tempsal_ueyes_v5.pt
+```
+- Warm-start da `v4` (il checkpoint più avanzato finora), non da `v2`.
+- `--mixing_lr 1e-5`: non arbitrario — è lo stesso learning rate con cui il decoder di mixing si è già allenato con successo nelle run 1/2 (100× più alto di `--lr 1e-6` usato per backbone/testa temporale in v3/v4), quindi già verificato sicuro per questi stessi layer.
+- `--no_epochs 20` (raddoppiato rispetto a v4): il punteggio non aveva ancora raggiunto un plateau netto all'epoca 9 di v4.
+- Resto invariato da v3/v4 (`--train_enc 1`, `--batch_size 16 --grad_accum_steps 2` per il fix OOM, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`).
+
+**Da controllare dopo la run**:
+- Se la mappa aggregata torna al livello di `v2` (o lo supera) → confermerebbe l'ipotesi del decoder di mixing "in ritardo" (slide S14 andrebbe aggiornata da ipotesi a risultato verificato).
+- Se resta comunque piatta → l'ipotesi va scartata, serve un'altra spiegazione.
+- Il gap train/val con più attenzione del solito: in v4 la loss di training scendeva mentre la mappa aggregata era già piatta (primo segnale di overfitting silenzioso) — con 20 epoche invece di 10 il rischio è più concreto.
+
 ### Step 5 — Validazione e metriche
 
 - ✅ `validate()` in `train.py` calcola già CC, KLDIV, NSS, SIM sulla mappa aggregata **e** CC/KLDIV per-slice (`Vol/CC`, `Vol/KLDIV`) sul volume temporale — fatto insieme allo Step 3.
