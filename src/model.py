@@ -209,7 +209,11 @@ class PNASBoostedModelMultiLevel(nn.Module):
     def __init__(self, device, model_path, model_vol_path, time_slices, train_model=False, train_enc=False, selected_slices=""):
         super(PNASBoostedModelMultiLevel, self).__init__()
 
-        
+        # requires_grad accepts only bool; callers (notebooks, CLI args) may
+        # pass 0/1 instead of False/True, so normalize here once.
+        train_model = bool(train_model)
+        train_enc = bool(train_enc)
+
         self.selected_slices = selected_slices
 
             
