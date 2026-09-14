@@ -453,7 +453,7 @@ Confronto per-immagine v6 vs v4: 42/108 immagini migliorate, delta medio CC −0
 
 **Conclusione**: l'ipotesi del "mixing decoder in ritardo" non è confermata nemmeno con un learning rate 3× più moderato — `v6` è funzionalmente equivalente a `v4`. Sia 3× che 10× lasciano la mappa aggregata al livello di `v4`, sotto `v2`, mentre solo 10× introduce overfitting evidente: il problema non è (solo) la velocità con cui il mixing decoder si ricalibra, altrimenti un valore intermedio avrebbe mostrato un miglioramento almeno parziale. Tra le leve provate finora (epoche, sblocco del backbone di `pnas_vol`, learning rate del mixing decoder) nessuna sposta la mappa aggregata oltre `v2` — **ma resta una leva mai testata, vedi Step 4.9 sotto.**
 
-### Step 4.9 — Settima run: sblocco anche di `pnas_sal` — 🔄 IN CORSO
+### Step 4.9 — Settima run: sblocco anche di `pnas_sal` — ✅ FATTO (ipotesi confutata, ultima leva esclusa)
 
 Motivazione: in tutte le run fin qui (v1-v6), `pnas_sal` — il ramo che produce direttamente la mappa aggregata — è rimasto **sempre completamente congelato**, pesi e statistiche BatchNorm inclusi, fin dalla primissima run. È l'unica leva "dentro" l'architettura di TempSAL mai messa alla prova per spiegare perché la mappa aggregata non superi mai il livello di `v2` nonostante il ramo temporale sia migliorato con lo sblocco di `pnas_vol` (Step 4.6).
 
@@ -484,9 +484,48 @@ python train.py \
 - `--batch_size 8 --grad_accum_steps 4` (batch effettivo 32, invariato): con **due** backbone PNAS interi ora sotto backprop invece di uno solo, la memoria per singolo forward/backward raddoppia di nuovo rispetto a v3-v6 — stesso tipo di problema OOM incontrato nello Step 4.5, stavolta anticipato invece di scoperto lanciando la run.
 - `--no_epochs 10`, stesso budget usato per lo sblocco di `pnas_vol` in v3/v4.
 
-**Da controllare dopo la run**:
-- Se la mappa aggregata (CC/KLDIV di validazione) supera finalmente il livello di `v2`/`v4` → sbloccare `pnas_sal` era la leva che mancava.
-- Se resta comunque piatta o peggiora → anche l'ultima leva "dentro" l'architettura di TempSAL è esclusa; il gap residuo con `v2` andrebbe attribuito alla dimensione del dataset o a un limite architetturale più di fondo (vedi discussione in chat: un'architettura scritta da zero avrebbe comunque bisogno di più dati di UEyes per essere competitiva con un backbone pre-addestrato, quindi resta un'ipotesi da citare con cautela).
+**Run eseguita, notebook salvato correttamente su GitHub** (log completo in `train_ueyes_colab.ipynb`, run wandb `wise-deluge-9`). Nessun OOM nonostante due backbone PNAS interi ora sotto backprop — il `--batch_size 8 --grad_accum_steps 4` anticipato ha funzionato al primo tentativo, a differenza dello Step 4.5. Andamento delle 10 epoche:
+
+| Epoca | Train loss | Val CC | Val KLDIV | Vol CC | Vol KLDIV | Salvato |
+|---|---|---|---|---|---|---|
+| 0 | −0.638 | 0.7066 | 0.4437 | 0.6463 | 0.7527 | ✅ |
+| 1 | −0.649 | 0.7068 | 0.4441 | 0.6466 | 0.7519 | ✅ |
+| 2 | −0.657 | 0.7058 | 0.4444 | 0.6462 | 0.7520 | ❌ |
+| 3 | −0.666 | 0.7063 | 0.4443 | 0.6462 | 0.7521 | ❌ |
+| 4 | −0.674 | 0.7050 | 0.4457 | 0.6466 | 0.7512 | ❌ |
+| 5 | −0.682 | 0.7039 | 0.4466 | 0.6459 | 0.7515 | ❌ |
+| 6 | −0.691 | 0.7072 | 0.4435 | 0.6469 | 0.7497 | ✅ (finale) |
+| 7 | −0.699 | 0.7045 | 0.4465 | 0.6462 | 0.7511 | ❌ |
+| 8 | −0.707 | 0.7032 | 0.4474 | 0.6471 | 0.7485 | ❌ |
+| 9 | −0.715 | 0.7043 | 0.4466 | 0.6469 | 0.7490 | ❌ |
+
+Nessun collasso da overfitting (CC oscilla in una banda strettissima, 0.703–0.707, per tutte le 10 epoche, come in v6), ma anche nessun miglioramento: il livello resta indistinguibile da v4/v6, e persino il ramo temporale (Vol CC 0.646–0.647) smette di progredire oltre quanto già raggiunto in v4, invece di beneficiare del gradiente aggiuntivo da `pnas_sal`.
+
+**Valutazione indipendente** su tutto il validation set (`evaluate_ueyes.py --run_name finetuned_v7`):
+
+| Metrica | v2 | v4 | v6 (mixing 3×) | **v7 (+`pnas_sal`)** |
+|---|---|---|---|---|
+| CC | 0.7178 | 0.7124 | 0.7091 | 0.7113 |
+| KLDIV | 0.4354 | 0.4391 | 0.4428 | 0.4398 |
+| NSS | 1.2973 | 1.2638 | 1.2665 | 1.2709 |
+| SIM | 0.6636 | 0.6609 | 0.6594 | 0.6602 |
+| Vol CC (media 5 slice) | 0.6349 | 0.6472 | 0.6477 | 0.6476 |
+| Vol KLDIV (media 5 slice) | 0.7796 | 0.7534 | 0.7495 | 0.7499 |
+| AUC-Judd | — | — | 0.7978 | 0.7985 |
+
+Confronto per-immagine v7 vs v4: 48/108 immagini migliorate, delta medio CC −0.0011 con deviazione standard (0.0054) più ampia del delta — rumore puro, nessun pattern sistematico. Nessuna categoria UI cambia in modo rilevante (`web` resta la più debole, CC 0.639, come in ogni run precedente).
+
+**Conclusione**: sbloccare anche `pnas_sal` non sposta nulla, né in meglio né in peggio, su nessuna delle due mappe — `v7` è numericamente indistinguibile da `v4` e `v6`, tutti e tre dentro la stessa banda di rumore. Con questo risultato sono state testate **tutte le leve architetturali disponibili dentro TempSAL**: sblocco del backbone di `pnas_vol` (v3/v4, ha aiutato il ramo temporale), learning rate del mixing decoder a 3× e 10× (v6/v5, mai un effetto positivo), sblocco di `pnas_sal` (v7, nessun effetto). Non resta più nessun componente allenabile non ancora provato.
+
+### Step 4.10 — Conclusioni dello Step 4 ✅ FATTO
+
+Chiusura della fase di fine-tuning (run 1-7):
+
+1. **Obiettivo centrale raggiunto**: il ramo temporale — il contributo specifico di questo lavoro rispetto a un modello di saliency "piatto" — è migliorato in modo netto e riproducibile tramite transfer learning (Vol CC 0.635→0.647, Vol KLDIV 0.78→0.75, rispettivamente +2% e −4% da `v2` a `v4`), grazie allo sblocco controllato del backbone di `pnas_vol` con il fix delle statistiche BatchNorm (Step 4.5/4.6) — il contributo tecnico più solido di tutta questa fase.
+2. **La mappa aggregata satura molto presto** (già entro l'epoca 5-10 delle prime run, v1/v2) e resta lì nonostante quattro tentativi indipendenti e mirati di smuoverla (v4, v5, v6, v7): non è un caso isolato, è un plateau robusto a più leve diverse e non spiegabile con un singolo esperimento sfortunato.
+3. Con tutte le leve interne a TempSAL esaurite, le spiegazioni residue per questo plateau sono esterne all'architettura: la dimensione del dataset (1872 immagini di training) o un limite intrinseco della saliency "aggregata" su categorie UI eterogenee (`web` resta sistematicamente la categoria più debole in ogni singola run, mai un'eccezione).
+4. Metodologicamente, la sequenza v1→v7 è una narrazione a variabile singola, controllata run per run: ogni ipotesi (shock da BatchNorm, mixing decoder "in ritardo", `pnas_sal` congelato) è stata testata e discussa esplicitamente, anche quando il risultato è stato negativo.
+5. **Checkpoint finale: `multilevel_tempsal_ueyes_v4.pt`** — resta il migliore sul ramo temporale, con la mappa aggregata sostanzialmente alla pari di `v2` (differenza nel rumore statistico di un validation set di 108 immagini). Né `v6` né `v7` offrono un vantaggio che giustifichi sostituirlo.
 
 ### Step 5 — Validazione e metriche
 
