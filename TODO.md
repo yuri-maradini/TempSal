@@ -395,7 +395,7 @@ python train.py \
 
 **Diagnosi**: non è la dimensione del dataset (le run 1/2 hanno usato lo stesso `--mixing_lr 1e-5` sullo stesso dataset UEyes con successo), ma la dinamica di ottimizzazione. Nelle run 1/2 il decoder di mixing riceveva input **fissi** da un `pnas_vol` completamente congelato: un learning rate alto convergeva senza rischio, il bersaglio non si muoveva. In v4/v5 il backbone di `pnas_vol` è sbloccato, quindi le slice temporali che il mixing decoder riceve in input cambiano ad ogni step: un learning rate 10× più alto del backbone fa sì che il decoder rincorra un bersaglio in movimento con passi troppo grandi, adattandosi al rumore di ogni singolo batch invece che alla tendenza — la firma classica dell'overfitting, solo che qui riguarda la relazione tra due parti del modello, non il rapporto training/dataset. Questa run non invalida quindi l'ipotesi originale (il mixing decoder "in ritardo" resta una spiegazione plausibile per il gap v4-vs-v2), ma dimostra che il learning rate verificato nelle run 1/2 non è il valore giusto da riusare in questo contesto diverso — vedi Step 4.8 per un secondo tentativo con un valore intermedio.
 
-### Step 4.8 — Sesta run (ultima pianificata): learning rate del mixing "intermedio" — 🔄 IN CORSO
+### Step 4.8 — Sesta run (ultima pianificata): learning rate del mixing "intermedio" — ✅ FATTO (ipotesi confutata, Step 4 chiuso)
 
 Invece di scartare l'ipotesi del mixing decoder "in ritardo" dopo il fallimento di v5, si prova un valore di `--mixing_lr` intermedio tra "nessun effetto osservabile" (v4, implicitamente 1×, cioè `--lr` = `1e-6`) e "overfitting quasi immediato" (v5, 10×, `1e-5`).
 
@@ -420,9 +420,38 @@ python train.py \
 - Warm-start da `v4` (non da `v5`, funzionalmente equivalente a `v4` ma senza valore aggiunto).
 - Resto invariato: `--train_enc 1`, `--train_model 1`, `--lr 1e-6`, `--batch_size 16 --grad_accum_steps 2`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
 
-**Da controllare dopo la run**:
-- Se la mappa aggregata (CC/KLDIV di validazione) supera il livello di `v2`/`v4` senza che il gap train/val si allarghi → l'ipotesi del decoder "in ritardo" è confermata con un learning rate più moderato.
-- Se anche a 3× si osserva lo stesso pattern di v5 (train loss giù, validazione piatta o peggiore dopo le prime epoche) → l'ipotesi va scartata definitivamente, e lo Step 4 si chiude con `v4` come checkpoint finale della fase di fine-tuning.
+**Run eseguita, notebook salvato correttamente su GitHub** (log completo in `train_ueyes_colab.ipynb`, run wandb `winter-voice-8`). Andamento delle 10 epoche:
+
+| Epoca | Train loss | Val CC | Val KLDIV | Vol CC | Vol KLDIV | Salvato |
+|---|---|---|---|---|---|---|
+| 0 | −0.637 | 0.7085 | 0.4419 | 0.6476 | 0.7513 | ✅ |
+| 1 | −0.648 | 0.7070 | 0.4433 | 0.6465 | 0.7536 | ❌ |
+| 2 | −0.657 | 0.7094 | 0.4415 | 0.6477 | 0.7505 | ✅ |
+| 3 | −0.667 | 0.7071 | 0.4429 | 0.6463 | 0.7523 | ❌ |
+| 4 | −0.676 | 0.7071 | 0.4439 | 0.6479 | 0.7492 | ❌ |
+| 5 | −0.684 | 0.7086 | 0.4425 | 0.6483 | 0.7480 | ✅ (finale) |
+| 6 | −0.693 | 0.7054 | 0.4451 | 0.6479 | 0.7489 | ❌ |
+| 7 | −0.702 | 0.7080 | 0.4434 | 0.6472 | 0.7497 | ❌ |
+| 8 | −0.710 | 0.7044 | 0.4468 | 0.6472 | 0.7495 | ❌ |
+| 9 | −0.719 | 0.7071 | 0.4444 | 0.6485 | 0.7471 | ❌ |
+
+A differenza di v5, **qui non c'è overfitting**: CC/KLDIV non peggiorano in modo monotono, oscillano rumorosamente intorno allo stesso livello per tutte le 10 epoche (CC 0.704–0.709), mentre il ramo temporale continua a migliorare in modo pulito, come in v4. Il learning rate più moderato (3×) evita quindi la patologia di v5 (10×) — ma la mappa aggregata non risale mai verso il livello di `v2`.
+
+**Valutazione indipendente** su tutto il validation set (`evaluate_ueyes.py --run_name finetuned_v6`):
+
+| Metrica | v4 | **v6** | Delta |
+|---|---|---|---|
+| CC (aggregata) | 0.7124 | 0.7091 | −0.0033 (rumore) |
+| KLDIV (aggregata) | 0.4391 | 0.4428 | +0.0037 (rumore) |
+| NSS | 1.2638 | 1.2665 | +0.0027 (rumore) |
+| SIM | 0.6609 | 0.6594 | −0.0015 (rumore) |
+| Vol CC (media 5 slice) | 0.6472 | 0.6477 | ~0 (invariato) |
+| Vol KLDIV (media 5 slice) | 0.7534 | 0.7495 | −0.004 (leggero, rumore) |
+| AUC-Judd | — | 0.7978 | — |
+
+Confronto per-immagine v6 vs v4: 42/108 immagini migliorate, delta medio CC −0.003 con deviazione standard (0.009) più ampia del delta stesso — nessun pattern sistematico, solo rumore statistico. Nessun caso di crollo drammatico (la peggiore, `b44e33`, perde solo 0.035 di CC).
+
+**Conclusione**: l'ipotesi del "mixing decoder in ritardo" non è confermata nemmeno con un learning rate 3× più moderato — `v6` è funzionalmente equivalente a `v4`. Sia 3× che 10× lasciano la mappa aggregata al livello di `v4`, sotto `v2`, mentre solo 10× introduce overfitting evidente: il problema non è (solo) la velocità con cui il mixing decoder si ricalibra, altrimenti un valore intermedio avrebbe mostrato un miglioramento almeno parziale. **Lo Step 4 si chiude qui: `multilevel_tempsal_ueyes_v4.pt` resta il checkpoint finale** — il migliore su ramo temporale (l'obiettivo centrale del lavoro), con la mappa aggregata sostanzialmente al livello di `v2` (differenza nel rumore statistico di un validation set di 108 immagini).
 
 ### Step 5 — Validazione e metriche
 
