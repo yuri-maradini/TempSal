@@ -31,11 +31,11 @@ GT_DIR = os.path.join(SCRIPT_DIR, '..', 'data_ueyes', 'maps', 'val')
 
 RUNS = ['baseline', 'finetuned', 'finetuned_v2', 'finetuned_v3', 'finetuned_v4']
 RUN_LABELS = {
-    'baseline': 'Baseline (solo SALICON)',
-    'finetuned': 'Fine-tuned v1',
-    'finetuned_v2': 'Fine-tuned v2',
-    'finetuned_v3': 'Fine-tuned v3',
-    'finetuned_v4': 'Fine-tuned v4',
+    'baseline': 'Baseline (training: SALICON)',
+    'finetuned': 'Fine-tuned v1 (training: UEyes)',
+    'finetuned_v2': 'Fine-tuned v2 (training: UEyes)',
+    'finetuned_v3': 'Fine-tuned v3 (training: UEyes)',
+    'finetuned_v4': 'Fine-tuned v4 (training: UEyes)',
     'ground_truth': 'Ground truth (UEyes)',
 }
 SIZE = 256
@@ -169,12 +169,20 @@ def main():
                 print(f'  {cat}: baseline={b:.4f} {last_ft}={f:.4f} gt={g:.4f} (n={len(idxs)})')
 
     # figure: baseline vs best available fine-tuned run vs ground truth
-    panels = [('baseline', 'Baseline (solo SALICON)')]
+    # Tutte le run sono VALUTATE sullo stesso set di validazione (108 immagini);
+    # i nomi dei dataset sono volutamente omessi dai titoli dei pannelli (fonte
+    # di confusione: sembravano indicare il set di valutazione, non quello di
+    # training) -- restano solo in RUN_LABELS per la tabella centroid_distance.
+    PANEL_LABELS = {'baseline': 'Baseline', 'gt': 'Ground truth'}
+    for r in ('finetuned', 'finetuned_v2', 'finetuned_v3', 'finetuned_v4'):
+        PANEL_LABELS[r] = 'Fine-tuned' if r == 'finetuned' else f'Fine-tuned {r.rsplit("_", 1)[-1]}'
+
+    panels = [('baseline', PANEL_LABELS['baseline'])]
     for r in ('finetuned_v4', 'finetuned_v3', 'finetuned_v2', 'finetuned'):
         if r in avgmap_by_run:
-            panels.append((r, f'{RUN_LABELS.get(r, r)} (UEyes)'))
+            panels.append((r, PANEL_LABELS[r]))
             break
-    panels.append(('gt', 'Ground truth (UEyes)'))
+    panels.append(('gt', PANEL_LABELS['gt']))
 
     maps = dict(avgmap_by_run)
     maps['gt'] = gt_avg_map
@@ -188,7 +196,7 @@ def main():
         ax.set_xticks([])
         ax.set_yticks([])
         ax.plot(m.shape[1] / 2, m.shape[0] / 2, marker='+', color='cyan', markersize=12, markeredgewidth=2)
-    fig.suptitle('Mappa di salienza media sulle immagini di validazione UEyes', fontsize=14)
+    fig.suptitle('Mappa di salienza media sulle immagini di validazione', fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
 
     out_path = os.path.join(presentation_dir, 'center_bias_average_maps.png')
