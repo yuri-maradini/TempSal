@@ -43,6 +43,7 @@ parser.add_argument('--nss_norm_coeff',default=1.0, type=float)
 parser.add_argument('--l1_coeff',default=1.0, type=float)
 parser.add_argument('--vol_loss_coeff',default=1.0, type=float)
 parser.add_argument('--train_enc',default=1, type=int)
+parser.add_argument('--train_sal_enc',default=0, type=int, help='sblocca pnas_sal (backbone + testa), sempre congelato di default')
 
 parser.add_argument('--dataset_dir',default="../data/", type=str)
 parser.add_argument('--batch_size',default=32, type=int)
@@ -93,7 +94,7 @@ if args.enc_model == "pnas":
 elif args.enc_model == "pnas_boosted_multi":
     print("PNAS Boosted Model PNASBoostedModelMultiLevel")
     from model import PNASBoostedModelMultiLevel
-    model = PNASBoostedModelMultiLevel(device, args.model_path, args.model_vol_path, args.time_slices, train_model=args.train_model, train_enc=bool(args.train_enc), selected_slices = args.selected_slices )
+    model = PNASBoostedModelMultiLevel(device, args.model_path, args.model_vol_path, args.time_slices, train_model=args.train_model, train_enc=bool(args.train_enc), train_sal_enc=bool(args.train_sal_enc), selected_slices = args.selected_slices )
 
 
 if torch.cuda.device_count() > 1:
@@ -167,9 +168,15 @@ def train(model, optimizer, loader, epoch, device, args, use_vol):
         # pass while the module is in train() mode, which model.train()
         # above just put it in. Force it back to eval() so the "frozen"
         # branch is actually frozen, statistics included, not just its
-        # learnable weights.
+        # learnable weights. Same reasoning as pnas_vol's backbone below:
+        # when --train_sal_enc unfreezes it for real, freeze only its
+        # BatchNorm running stats (not its weights) to avoid repeating the
+        # Step 4.5 shock on this branch too.
         base_model = model.module if hasattr(model, 'module') else model
-        base_model.pnas_sal.eval()
+        if not bool(args.train_sal_enc):
+            base_model.pnas_sal.eval()
+        else:
+            freeze_batchnorm_stats(base_model.pnas_sal.module.module.pnas)
         if not bool(args.train_enc):
             # Same issue, same fix, for pnas_vol's internal PNASNet backbone:
             # requires_grad=train_enc (see model.py) blocks weight updates,

@@ -206,13 +206,14 @@ class PNASVolModellast(nn.Module):
 
 class PNASBoostedModelMultiLevel(nn.Module):
 
-    def __init__(self, device, model_path, model_vol_path, time_slices, train_model=False, train_enc=False, selected_slices=""):
+    def __init__(self, device, model_path, model_vol_path, time_slices, train_model=False, train_enc=False, train_sal_enc=False, selected_slices=""):
         super(PNASBoostedModelMultiLevel, self).__init__()
 
         # requires_grad accepts only bool; callers (notebooks, CLI args) may
         # pass 0/1 instead of False/True, so normalize here once.
         train_model = bool(train_model)
         train_enc = bool(train_enc)
+        train_sal_enc = bool(train_sal_enc)
 
         self.selected_slices = selected_slices
 
@@ -294,8 +295,15 @@ class PNASBoostedModelMultiLevel(nn.Module):
         model.load_state_dict(sal_state_dict, strict=True)
         self.pnas_sal = nn.DataParallel(model).to(device)
 
+        # pnas_sal produces the aggregate saliency map directly (pnas_pred
+        # below) and, unlike pnas_vol, was always kept entirely frozen --
+        # every fine-tuning run so far (including unfreezing pnas_vol's own
+        # backbone) left it untouched. train_sal_enc unfreezes it as a single
+        # unit (backbone + its own deconv head together): it was never
+        # designed with an independent backbone/head split the way pnas_vol
+        # is, so there is no existing "head only" case to preserve here.
         for param in self.pnas_sal.parameters():
-            param.requires_grad = False
+            param.requires_grad = train_sal_enc
 
     def forward(self, images):
       #  print("IMAGES", images.shape)

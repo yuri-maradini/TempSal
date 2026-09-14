@@ -395,7 +395,7 @@ python train.py \
 
 **Diagnosi**: non è la dimensione del dataset (le run 1/2 hanno usato lo stesso `--mixing_lr 1e-5` sullo stesso dataset UEyes con successo), ma la dinamica di ottimizzazione. Nelle run 1/2 il decoder di mixing riceveva input **fissi** da un `pnas_vol` completamente congelato: un learning rate alto convergeva senza rischio, il bersaglio non si muoveva. In v4/v5 il backbone di `pnas_vol` è sbloccato, quindi le slice temporali che il mixing decoder riceve in input cambiano ad ogni step: un learning rate 10× più alto del backbone fa sì che il decoder rincorra un bersaglio in movimento con passi troppo grandi, adattandosi al rumore di ogni singolo batch invece che alla tendenza — la firma classica dell'overfitting, solo che qui riguarda la relazione tra due parti del modello, non il rapporto training/dataset. Questa run non invalida quindi l'ipotesi originale (il mixing decoder "in ritardo" resta una spiegazione plausibile per il gap v4-vs-v2), ma dimostra che il learning rate verificato nelle run 1/2 non è il valore giusto da riusare in questo contesto diverso — vedi Step 4.8 per un secondo tentativo con un valore intermedio.
 
-### Step 4.8 — Sesta run (ultima pianificata): learning rate del mixing "intermedio" — ✅ FATTO (ipotesi confutata, Step 4 chiuso)
+### Step 4.8 — Sesta run: learning rate del mixing "intermedio" — ✅ FATTO (ipotesi confutata)
 
 Invece di scartare l'ipotesi del mixing decoder "in ritardo" dopo il fallimento di v5, si prova un valore di `--mixing_lr` intermedio tra "nessun effetto osservabile" (v4, implicitamente 1×, cioè `--lr` = `1e-6`) e "overfitting quasi immediato" (v5, 10×, `1e-5`).
 
@@ -451,7 +451,42 @@ A differenza di v5, **qui non c'è overfitting**: CC/KLDIV non peggiorano in mod
 
 Confronto per-immagine v6 vs v4: 42/108 immagini migliorate, delta medio CC −0.003 con deviazione standard (0.009) più ampia del delta stesso — nessun pattern sistematico, solo rumore statistico. Nessun caso di crollo drammatico (la peggiore, `b44e33`, perde solo 0.035 di CC).
 
-**Conclusione**: l'ipotesi del "mixing decoder in ritardo" non è confermata nemmeno con un learning rate 3× più moderato — `v6` è funzionalmente equivalente a `v4`. Sia 3× che 10× lasciano la mappa aggregata al livello di `v4`, sotto `v2`, mentre solo 10× introduce overfitting evidente: il problema non è (solo) la velocità con cui il mixing decoder si ricalibra, altrimenti un valore intermedio avrebbe mostrato un miglioramento almeno parziale. **Lo Step 4 si chiude qui: `multilevel_tempsal_ueyes_v4.pt` resta il checkpoint finale** — il migliore su ramo temporale (l'obiettivo centrale del lavoro), con la mappa aggregata sostanzialmente al livello di `v2` (differenza nel rumore statistico di un validation set di 108 immagini).
+**Conclusione**: l'ipotesi del "mixing decoder in ritardo" non è confermata nemmeno con un learning rate 3× più moderato — `v6` è funzionalmente equivalente a `v4`. Sia 3× che 10× lasciano la mappa aggregata al livello di `v4`, sotto `v2`, mentre solo 10× introduce overfitting evidente: il problema non è (solo) la velocità con cui il mixing decoder si ricalibra, altrimenti un valore intermedio avrebbe mostrato un miglioramento almeno parziale. Tra le leve provate finora (epoche, sblocco del backbone di `pnas_vol`, learning rate del mixing decoder) nessuna sposta la mappa aggregata oltre `v2` — **ma resta una leva mai testata, vedi Step 4.9 sotto.**
+
+### Step 4.9 — Settima run: sblocco anche di `pnas_sal` — 🔄 IN CORSO
+
+Motivazione: in tutte le run fin qui (v1-v6), `pnas_sal` — il ramo che produce direttamente la mappa aggregata — è rimasto **sempre completamente congelato**, pesi e statistiche BatchNorm inclusi, fin dalla primissima run. È l'unica leva "dentro" l'architettura di TempSAL mai messa alla prova per spiegare perché la mappa aggregata non superi mai il livello di `v2` nonostante il ramo temporale sia migliorato con lo sblocco di `pnas_vol` (Step 4.6).
+
+**Nuovo argomento in `src/train.py`**: `--train_sal_enc` (default `0`, comportamento identico a tutte le run precedenti). Sblocca `pnas_sal` per intero — backbone PNAS e testa `deconv_layer0..5` insieme, come un unico blocco — perché, a differenza di `pnas_vol`, `pnas_sal` non è mai stato progettato con un controllo separato backbone/testa: non esiste un caso "solo testa" preesistente da preservare. Modifica corrispondente in `src/model.py`: `PNASBoostedModelMultiLevel.__init__` accetta ora `train_sal_enc` e lo usa al posto del precedente `requires_grad = False` incondizionato su tutti i parametri di `pnas_sal`.
+
+**Il fix per le statistiche BatchNorm è applicato da subito**, non scoperto a posteriori come nello Step 4.5: `freeze_batchnorm_stats()` (la stessa funzione già scritta per `pnas_vol`) viene chiamata anche sul backbone di `pnas_sal` quando `--train_sal_enc 1`, così `running_mean`/`running_var` restano ancorati ai valori di `v4` mentre i pesi si aggiornano via gradiente — nessuno shock iniziale atteso stavolta, a differenza della prima volta che si è sbloccato un backbone (Step 4.5).
+
+**Verifica locale su CPU** (mini-dataset, warm-start da `v4`, `--train_enc 1 --train_sal_enc 1`, 2 epoche): confronto peso-per-peso tra checkpoint prima/dopo — `pnas_sal` cambia davvero (789/791 tensori, pesi) mentre le sue statistiche BatchNorm restano **0/603 invariate**, lo stesso identico pattern già verificato per `pnas_vol` nello Step 4.6, stavolta sull'altro ramo. `pnas_vol` continua a comportarsi esattamente come nelle run precedenti (775/777 pesi cambiati, 0/603 statistiche invariate) e il mixing decoder resta 14/14 allenabile — nessuna regressione introdotta sul resto del modello.
+
+**Comando** (`src/train_ueyes_colab.ipynb` aggiornato di conseguenza):
+```bash
+python train.py \
+  --enc_model pnas_boosted_multi \
+  --dataset_dir ../data_ueyes/ \
+  --model_path ./checkpoints/multilevel_tempsal_ueyes_v4.pt \
+  --model_vol_path ./checkpoints/multilevel_tempsal_ueyes_v4.pt \
+  --train_model 1 \
+  --train_enc 1 \
+  --train_sal_enc 1 \
+  --lr 1e-6 \
+  --batch_size 8 \
+  --grad_accum_steps 4 \
+  --no_epochs 10 \
+  --model_val_path ./checkpoints/multilevel_tempsal_ueyes_v7.pt
+```
+- Un solo cambiamento rispetto a `v4`: stesso comando (`--train_enc 1 --train_model 1 --lr 1e-6`, niente `--mixing_lr` esplicito — ricade su `--lr` come in `v4`), con l'aggiunta di `--train_sal_enc 1`. Isola l'effetto della nuova variabile.
+- Warm-start da `v4` (il checkpoint finale finora).
+- `--batch_size 8 --grad_accum_steps 4` (batch effettivo 32, invariato): con **due** backbone PNAS interi ora sotto backprop invece di uno solo, la memoria per singolo forward/backward raddoppia di nuovo rispetto a v3-v6 — stesso tipo di problema OOM incontrato nello Step 4.5, stavolta anticipato invece di scoperto lanciando la run.
+- `--no_epochs 10`, stesso budget usato per lo sblocco di `pnas_vol` in v3/v4.
+
+**Da controllare dopo la run**:
+- Se la mappa aggregata (CC/KLDIV di validazione) supera finalmente il livello di `v2`/`v4` → sbloccare `pnas_sal` era la leva che mancava.
+- Se resta comunque piatta o peggiora → anche l'ultima leva "dentro" l'architettura di TempSAL è esclusa; il gap residuo con `v2` andrebbe attribuito alla dimensione del dataset o a un limite architetturale più di fondo (vedi discussione in chat: un'architettura scritta da zero avrebbe comunque bisogno di più dati di UEyes per essere competitiva con un backbone pre-addestrato, quindi resta un'ipotesi da citare con cautela).
 
 ### Step 5 — Validazione e metriche
 
