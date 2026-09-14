@@ -360,7 +360,7 @@ Tutte e 5 le slice temporali migliorano rispetto a `v2` in modo uniforme (non co
 
 **Conclusione**: il fix ha funzionato. Sbloccare il backbone **aiuta davvero il ramo temporale** (l'obiettivo centrale di questo lavoro), a fronte di un compromesso trascurabile sulla mappa aggregata — non più il peggioramento netto e uniforme di `v3`. Questo risolve in modo pulito, con un esperimento controllato, la decisione lasciata aperta fin dallo Step 4. **`multilevel_tempsal_ueyes_v4.pt` è ora il checkpoint migliore sul ramo temporale** e il candidato naturale come modello finale. Dato che il punteggio era ancora in salita all'epoca 9 senza plateau, ulteriori epoche da questo checkpoint potrebbero spingere il ramo temporale ancora oltre — margine non ancora sfruttato, ma il guadagno aggiuntivo atteso è probabilmente modesto vista la curva già poco ripida.
 
-### Step 4.7 — Quinta run: più epoche + learning rate differenziato sul mixing decoder — 🔄 IN CORSO
+### Step 4.7 — Quinta run: più epoche + learning rate differenziato sul mixing decoder — ✅ FATTO (ipotesi confutata)
 
 Motivazione (vedi anche slide S14 in `results/presentation/slides.md`): in v4 il ramo temporale migliora ma la mappa aggregata resta leggermente sotto `v2`. Ipotesi mai testata finora: il decoder di mixing (`deconv_layer1..4` + `deconv_mix` su `PNASBoostedModelMultiLevel`, sempre allenabile in tutte le run) riceve come input anche le slice temporali prodotte da `pnas_vol`, che in v4 sono cambiate — ma il decoder si allena alla stessa velocità lentissima (`lr=1e-6`) del backbone appena sbloccato, e potrebbe non aver ancora fatto in tempo a recalibrarsi.
 
@@ -387,14 +387,42 @@ python train.py \
   --model_val_path ./checkpoints/multilevel_tempsal_ueyes_v5.pt
 ```
 - Warm-start da `v4` (il checkpoint più avanzato finora), non da `v2`.
-- `--mixing_lr 1e-5`: non arbitrario — è lo stesso learning rate con cui il decoder di mixing si è già allenato con successo nelle run 1/2 (100× più alto di `--lr 1e-6` usato per backbone/testa temporale in v3/v4), quindi già verificato sicuro per questi stessi layer.
+- `--mixing_lr 1e-5`: non arbitrario — è lo stesso learning rate con cui il decoder di mixing si è già allenato con successo nelle run 1/2 (10× più alto di `--lr 1e-6` usato per backbone/testa temporale in v3/v4), quindi già verificato sicuro per questi stessi layer.
 - `--no_epochs 20` (raddoppiato rispetto a v4): il punteggio non aveva ancora raggiunto un plateau netto all'epoca 9 di v4.
 - Resto invariato da v3/v4 (`--train_enc 1`, `--batch_size 16 --grad_accum_steps 2` per il fix OOM, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`).
 
+**Risultato**: l'ipotesi è **confutata**. Curva completa delle 20 epoche (log in `src/train_ueyes_colab.ipynb`, riassunto in `results/presentation/run5_epoch_curve.xlsx`): la loss di training scende in modo monotono e continuo per tutte le 20 epoche (−0.631 → −0.838), ma su validazione **solo l'epoca 0 e 1 migliorano** (CC 0.708→0.711, il picco dell'intera run), dopodiché ogni metrica di validazione peggiora o oscilla senza tendenza fino alla fine: CC scende fino a 0.682 (epoca 18) risalendo un po' a 0.695 (epoca 19, ultima), KLDIV sale da 0.440 a 0.460-0.471, NSS scende da 1.23 a un minimo di 1.157. Il ramo temporale (`Vol_CC`/`Vol_KLDIV`), che non usa `--mixing_lr`, continua invece a migliorare leggermente per quasi tutta la run, esattamente come in v4 — prova che il problema è isolato al mixing decoder, non un effetto generale di over-training. Il checkpoint viene salvato solo alle epoche 0 e 1 (criterio di salvataggio basato sul punteggio combinato, che peggiora da lì in poi): **v5 è quindi funzionalmente equivalente a v4**, confermato anche da una valutazione indipendente completa su tutto il validation set con `evaluate_ueyes.py` (numeri coincidenti con l'epoca salvata, entro il normale arrotondamento batch-vs-per-immagine).
+
+**Diagnosi**: non è la dimensione del dataset (le run 1/2 hanno usato lo stesso `--mixing_lr 1e-5` sullo stesso dataset UEyes con successo), ma la dinamica di ottimizzazione. Nelle run 1/2 il decoder di mixing riceveva input **fissi** da un `pnas_vol` completamente congelato: un learning rate alto convergeva senza rischio, il bersaglio non si muoveva. In v4/v5 il backbone di `pnas_vol` è sbloccato, quindi le slice temporali che il mixing decoder riceve in input cambiano ad ogni step: un learning rate 10× più alto del backbone fa sì che il decoder rincorra un bersaglio in movimento con passi troppo grandi, adattandosi al rumore di ogni singolo batch invece che alla tendenza — la firma classica dell'overfitting, solo che qui riguarda la relazione tra due parti del modello, non il rapporto training/dataset. Questa run non invalida quindi l'ipotesi originale (il mixing decoder "in ritardo" resta una spiegazione plausibile per il gap v4-vs-v2), ma dimostra che il learning rate verificato nelle run 1/2 non è il valore giusto da riusare in questo contesto diverso — vedi Step 4.8 per un secondo tentativo con un valore intermedio.
+
+### Step 4.8 — Sesta run (ultima pianificata): learning rate del mixing "intermedio" — 🔄 IN CORSO
+
+Invece di scartare l'ipotesi del mixing decoder "in ritardo" dopo il fallimento di v5, si prova un valore di `--mixing_lr` intermedio tra "nessun effetto osservabile" (v4, implicitamente 1×, cioè `--lr` = `1e-6`) e "overfitting quasi immediato" (v5, 10×, `1e-5`).
+
+**Comando** (`src/train_ueyes_colab.ipynb` aggiornato di conseguenza):
+```bash
+python train.py \
+  --enc_model pnas_boosted_multi \
+  --dataset_dir ../data_ueyes/ \
+  --model_path ./checkpoints/multilevel_tempsal_ueyes_v4.pt \
+  --model_vol_path ./checkpoints/multilevel_tempsal_ueyes_v4.pt \
+  --train_model 1 \
+  --train_enc 1 \
+  --lr 1e-6 \
+  --mixing_lr 3e-6 \
+  --batch_size 16 \
+  --grad_accum_steps 2 \
+  --no_epochs 10 \
+  --model_val_path ./checkpoints/multilevel_tempsal_ueyes_v6.pt
+```
+- `--mixing_lr 3e-6`: circa 3× `--lr`, la media geometrica tra 1× (v4) e 10× (v5) — un passo abbastanza più grande del backbone da permettere una vera ricalibrazione del decoder, ma non così grande da fargli ignorare il bersaglio che si sposta.
+- `--no_epochs 10` (dimezzato rispetto a v5): la run 5 ha mostrato che l'effetto del mixing_lr si manifesta già entro le prime 1-2 epoche e poi resta stabile o degrada — non serve un budget di 20 epoche per osservarlo.
+- Warm-start da `v4` (non da `v5`, funzionalmente equivalente a `v4` ma senza valore aggiunto).
+- Resto invariato: `--train_enc 1`, `--train_model 1`, `--lr 1e-6`, `--batch_size 16 --grad_accum_steps 2`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+
 **Da controllare dopo la run**:
-- Se la mappa aggregata torna al livello di `v2` (o lo supera) → confermerebbe l'ipotesi del decoder di mixing "in ritardo" (slide S14 andrebbe aggiornata da ipotesi a risultato verificato).
-- Se resta comunque piatta → l'ipotesi va scartata, serve un'altra spiegazione.
-- Il gap train/val con più attenzione del solito: in v4 la loss di training scendeva mentre la mappa aggregata era già piatta (primo segnale di overfitting silenzioso) — con 20 epoche invece di 10 il rischio è più concreto.
+- Se la mappa aggregata (CC/KLDIV di validazione) supera il livello di `v2`/`v4` senza che il gap train/val si allarghi → l'ipotesi del decoder "in ritardo" è confermata con un learning rate più moderato.
+- Se anche a 3× si osserva lo stesso pattern di v5 (train loss giù, validazione piatta o peggiore dopo le prime epoche) → l'ipotesi va scartata definitivamente, e lo Step 4 si chiude con `v4` come checkpoint finale della fase di fine-tuning.
 
 ### Step 5 — Validazione e metriche
 
