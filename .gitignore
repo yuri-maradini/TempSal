@@ -9,6 +9,7 @@ src/checkpoints/*
 /data/
 /data_ueyes/
 /results/
+/presentation/
 /emergency_backup/
 *.zip
 
