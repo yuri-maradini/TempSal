@@ -268,7 +268,7 @@ Conferma quanto stimato dal log di training (Step 4.3): mappa aggregata invariat
 
 **Conclusione**: nessun segnale che le 10 epoche aggiuntive abbiano danneggiato qualcosa — via libera per procedere con la run 3 partendo da questo checkpoint.
 
-### Step 4.5 — Terza run: sblocco del backbone di `pnas_vol` (`--train_enc 1`) — 🔄 IN CORSO
+### Step 4.5 — Terza run: sblocco del backbone di `pnas_vol` (`--train_enc 1`) — ✅ FATTO (inconcludente, causa isolata: shock da BatchNorm)
 
 Alla luce dello Step 4.3 (plateau raggiunto su entrambi i rami con la capacità attuale) e dello Step 4.4 (checkpoint `v2` verificato solido), il passo naturale è risolvere la decisione aperta in sezione 3 ("scongelare `pnas_vol` per un fine-tuning vero, o tenerlo congelato") provando a sbloccare anche il backbone PNAS interno di `pnas_vol`, finora sempre congelato per design (vedi Step 3/4).
 
@@ -314,7 +314,7 @@ Il punteggio combinato è migliorato **ad ogni singola epoca** (salvato tutte le
 
 Questo risultato resta comunque utile e va citato in tesi così com'è: mostra chiaramente l'effetto delle statistiche BatchNorm su un fine-tuning con backbone sbloccato, un dettaglio facilmente trascurabile.
 
-### Step 4.6 — Quarta run: backbone sbloccato con statistiche BatchNorm congelate — 🔄 IN CORSO
+### Step 4.6 — Quarta run: backbone sbloccato con statistiche BatchNorm congelate — ✅ FATTO (`v4`, checkpoint finale)
 
 Per isolare l'effetto trovato nello Step 4.5 (lo shock iniziale da BatchNorm, non l'apprendimento vero del backbone), corretto `src/train.py` così che i **pesi** del backbone di `pnas_vol` restino allenabili (`--train_enc 1`, invariato) ma le sue **statistiche interne di BatchNorm** (`running_mean`/`running_var`) restino congelate sui valori del checkpoint di warm-start, invece di aggiornarsi automaticamente ad ogni immagine come succede di default quando un modulo è in modalità `.train()`.
 
@@ -521,7 +521,10 @@ Confronto per-immagine v7 vs v4: 48/108 immagini migliorate, delta medio CC −0
 
 Chiusura della fase di fine-tuning (run 1-7):
 
-1. **Obiettivo centrale raggiunto**: il ramo temporale — il contributo specifico di questo lavoro rispetto a un modello di saliency "piatto" — è migliorato in modo netto e riproducibile tramite transfer learning (Vol CC 0.635→0.647, Vol KLDIV 0.78→0.75, rispettivamente +2% e −4% da `v2` a `v4`), grazie allo sblocco controllato del backbone di `pnas_vol` con il fix delle statistiche BatchNorm (Step 4.5/4.6) — il contributo tecnico più solido di tutta questa fase.
+1. **Obiettivo centrale raggiunto**: il ramo temporale — il contributo specifico di questo lavoro rispetto a un modello di saliency "piatto" — è migliorato in modo netto e riproducibile tramite transfer learning. Da tenere distinti due salti:
+   - **Baseline → v4** (miglioramento totale, `evaluate_ueyes.py --run_name baseline` vs `finetuned_v4`): CC 0.494→0.712 (**+44%**), KLDIV 0.921→0.439 (**−52%**), NSS 0.893→1.264 (**+42%**), SIM 0.549→0.661 (**+20%**), AUC-Judd 0.736→0.797 (**+8%**), Vol CC 0.328→0.647 (**+97%**, quasi raddoppiato), Vol KLDIV 1.601→0.753 (**−53%**). Il ramo temporale parte molto più indietro della mappa aggregata (il modello pre-addestrato non aveva mai visto la nozione di "dove si guarda nei primi vs negli ultimi secondi" su una UI) e recupera terreno in proporzione maggiore.
+   - **v2 → v4** (incremento marginale dovuto specificamente allo sblocco del backbone, Step 4.5/4.6, dopo che il salto grande era già avvenuto in v1/v2): Vol CC 0.635→0.647 (+1.9%), Vol KLDIV 0.780→0.753 (−3.4%) — un raffinamento più piccolo ma mirato, che non tocca la mappa aggregata (rimasta sostanzialmente invariata, vedi Step 4.6).
+   Il fix delle statistiche BatchNorm (Step 4.5/4.6) è il contributo tecnico più solido di tutta questa fase: senza di esso lo sblocco del backbone peggiorava la mappa aggregata invece di lasciarla invariata (v3).
 2. **La mappa aggregata satura molto presto** (già entro l'epoca 5-10 delle prime run, v1/v2) e resta lì nonostante quattro tentativi indipendenti e mirati di smuoverla (v4, v5, v6, v7): non è un caso isolato, è un plateau robusto a più leve diverse e non spiegabile con un singolo esperimento sfortunato.
 3. Con tutte le leve interne a TempSAL esaurite, le spiegazioni residue per questo plateau sono esterne all'architettura: la dimensione del dataset (1872 immagini di training) o un limite intrinseco della saliency "aggregata" su categorie UI eterogenee (`web` resta sistematicamente la categoria più debole in ogni singola run, mai un'eccezione).
 4. Metodologicamente, la sequenza v1→v7 è una narrazione a variabile singola, controllata run per run: ogni ipotesi (shock da BatchNorm, mixing decoder "in ritardo", `pnas_sal` congelato) è stata testata e discussa esplicitamente, anche quando il risultato è stato negativo.
@@ -568,7 +571,7 @@ Verifica quantitativa di un'osservazione qualitativa: il modello baseline (allen
 
 Nuovo script **`src/analyze_center_bias.py`**: per ciascun run già valutato (`results/<run>/predictions/*_agg.png`), calcola il centroide pesato dall'intensità di ogni mappa di salienza predetta e la sua distanza dal centro dell'immagine (normalizzata, 0 = centro esatto); confronta baseline vs le tre run fine-tuned, e contro il centroide della ground truth reale. Calcola anche la **mappa media** sulle 108 immagini di validazione (visualizzazione standard per il center-bias: il contenuto specifico di ogni immagine si media via, un bias posizionale sistematico no).
 
-**Risultato**: distanza media dal centro — baseline 0.089, fine-tuned (v1/v2/v3/v4) 0.152-0.155, ground truth 0.164. Il fine-tuning sposta quindi la predizione dal ~54% al ~93% della distanza "vera" (quella della ground truth), un effetto consistente su singola immagine (87-89% delle 108 immagini di validazione, a seconda della run) e su tutte e 4 le categorie UI. La mappa media conferma visivamente: baseline = macchia quasi simmetrica centrata sull'immagine; fine-tuned e ground truth = entrambe spostate/allungate nella stessa direzione (verso l'alto-sinistra), pattern simile tra loro e diverso dal baseline.
+**Risultato**: distanza media dal centro — baseline 0.0894, fine-tuned (v1/v2/v3/v4) 0.152-0.155 (v4: 0.1531, **+71% rispetto alla baseline**), ground truth 0.1643. Il fine-tuning sposta quindi la predizione dal ~54% al ~93% della distanza "vera" (quella della ground truth: 0.1531/0.1643), un effetto consistente su singola immagine (87-89% delle 108 immagini di validazione, a seconda della run) e su tutte e 4 le categorie UI. Valori esatti in `results/presentation/centroid_distance_table.csv`. La mappa media conferma visivamente: baseline = macchia quasi simmetrica centrata sull'immagine; fine-tuned e ground truth = entrambe spostate/allungate nella stessa direzione (verso l'alto-sinistra), pattern simile tra loro e diverso dal baseline.
 
 Output: `results/presentation/center_bias_average_maps.png` (non tracciato da git, generato — rilanciato dopo la valutazione di `v4` per includerla nel confronto, `RUNS`/`RUN_LABELS` in `analyze_center_bias.py` aggiornati di conseguenza).
 
@@ -586,13 +589,15 @@ Aggiunta a `evaluate_ueyes.py` (colonna `AUC_Judd` nel CSV) e ri-lanciata su tut
 
 A differenza di CC, che mostra chiaramente la regressione di v3 e il recupero parziale di v4, AUC-Judd vede le quattro run fine-tuned come sostanzialmente equivalenti (range di soli 0.005-0.006, verosimilmente rumore) — una lettura più cauta, ma comunque una conferma indipendente e robusta che il fine-tuning nel suo complesso aiuta molto (+0.067, +9% assoluto sulla scala AUC).
 
+Calcolata anche per le run successive (Step 4.8/4.9): v6 0.798, v7 0.799 — stesso range di v1-v4, conferma indipendente che né il mixing LR differenziato né lo sblocco di `pnas_sal` cambiano nulla, anche su questa metrica.
+
 #### Report risultati per la relatrice ✅ FATTO
 
 Costruito un report HTML standalone (grafici SVG fatti a mano secondo la metodologia di design-system, nessuna libreria esterna) con tutti i risultati numerici del progetto: panoramica esperimenti, le 5 metriche aggregate, curve di training epoca-per-epoca per le 4 run, ramo temporale (grafici + due esempi visivi con le 5 slice di baseline/v4/ground-truth affiancate), per-categoria, center-bias, 5 casi qualitativi (un miglioramento per categoria + il limite su "web"), conclusioni. Esportato anche in PDF (rendering via Chromium headless, foglio di stile dedicato per la stampa) per l'invio diretto alla relatrice — file in `results/presentation/TempSAL_UEyes_risultati.pdf` (non tracciato da git).
 
-### Step 6 — Housekeeping tecnico prima di lanciare il training vero
+### Step 6 — Housekeeping tecnico (`.cuda()` residui) — non necessario, mai bloccante
 
-- Patchare i restanti `.cuda()` fissi (`loss.py:95-96`, `generate_volumes.py:29`, `train.py:103`) con lo stesso pattern `.to(device)` già usato in `model.py`, **solo se** si prevede di eseguire/debuggare anche solo in parte il training su questa macchina CPU-only. Se il training vero e proprio girerà su una macchina con GPU (es. Colab, cluster universitario), questo passaggio non è strettamente necessario ma resta comunque una buona idea per poter testare la pipeline dati in locale prima di lanciare run costose altrove.
+Nota storica: si era considerato di patchare alcuni `.cuda()` fissi rimasti in `loss.py` (righe 99-100, dentro `nss()`) e `generate_volumes.py:29`, con lo stesso pattern `.to(device)` di `model.py`, per poter debuggare anche il training in locale su questa macchina CPU-only. **Non si è mai reso necessario**: tutte le run reali (Step 4.1-4.9) sono girate su Colab (GPU), dove `.cuda()` funziona di per sé; gli smoke test locali su CPU usati per verificare ogni fix prima del lancio (Step 3-4.9) non hanno mai toccato i path di codice con questi `.cuda()` fissi (`nss()` non è nella loss di default, `generate_volumes.py` è stato eseguito una sola volta per SALICON, non per UEyes — per UEyes si usa `generate_volumes_ueyes.py`, che non ha questo problema). `train.py` non ha invece nessun `.cuda()` residuo: risulta già pulito.
 
 ---
 
@@ -601,21 +606,46 @@ Costruito un report HTML standalone (grafici SVG fatti a mano secondo la metodol
 - [x] ~~Estensione immagini mista e qualità fixation map~~ — risolto nello Step 1: loader esteso per estensioni miste, fixation map ricostruita da `eyetracker_logs/` invece che da `fixmaps_7s`.
 - [x] ~~Opzione A vs Opzione B per il volume di salienza temporale~~ — risolto nello Step 2: scelta l'Opzione A (bin disgiunti da 1s, fedeltà a TempSAL). Fissazioni oltre i 5s clippate nell'ultimo bin (non scartate), fissazioni a cavallo di un bin assegnate per intero al bin di `FPOGS`.
 - [x] ~~Dove eseguire il training vero~~ — risolto: Google Colab (GPU Tesla T4), via `src/train_ueyes_colab.ipynb`.
-- [ ] Scongelare `pnas_vol` (fine-tuning "vero" del ramo temporale) o lasciarlo congelato e allenare solo i layer di mixing (transfer learning più conservativo) — la testa (`train_model=1`, backbone congelato) è stata provata nelle Step 4.1/4.3 con buoni risultati fino a un plateau; lo sblocco del backbone (`train_enc=1`) è in corso nello Step 4.5.
+- [x] ~~Scongelare `pnas_vol` (fine-tuning "vero" del ramo temporale) o lasciarlo congelato~~ — risolto: sbloccato con successo negli Step 4.5/4.6 (una volta corretto lo shock da BatchNorm), migliora il ramo temporale senza danneggiare la mappa aggregata. `pnas_sal` è stato sbloccato a sua volta nello Step 4.9, senza ulteriore effetto. Vedi conclusioni finali in Step 4.10.
 - [ ] Resize con stretch (comportamento attuale) o con padding, per gli screenshot UI non quadrati — verificato nello Step 4.1 che non è la causa principale della debolezza sulla categoria "web" (mobile ha la distorsione più estrema ma il risultato migliore), quindi priorità bassa per ora.
 
 ---
 
 ## 4. File e riferimenti utili
 
-- Codice modello: `Tempsal/src/model.py`
-- Training script (da correggere/estendere): `Tempsal/src/train.py`
-- Generazione volumi SALICON (da cui prendere ispirazione per UEyes): `Tempsal/src/generate_volumes.py`
-- Utility (Gaussian blur, parsing fissazioni, loss helpers): `Tempsal/src/utils.py`
-- Loss functions: `Tempsal/src/loss.py`
-- Dataset loader: `Tempsal/src/dataloader_clean.py` (+ shim `Tempsal/src/dataloader.py`)
-- Checkpoint pre-addestrato: `Tempsal/src/checkpoints/multilevel_tempsal.pt`
-- Notebook di inferenza (funzionante, testato su CPU): `Tempsal/src/inference.ipynb`
+**Codice modello e training**:
+- Codice modello (backbone PNAS, `pnas_vol`, `pnas_sal`, decoder di mixing): `Tempsal/src/model.py`
+- Training script (loop di train/validate, tutti gli argomenti da riga di comando incluso `--train_enc`/`--train_sal_enc`/`--mixing_lr`/`--grad_accum_steps`): `Tempsal/src/train.py`
+- Notebook per lanciare il training su Colab (GPU, clona il codice da `origin/main` ad ogni run): `Tempsal/src/train_ueyes_colab.ipynb`
+- Loss functions (CC/KLDIV/NSS/SIM/AUC-Judd): `Tempsal/src/loss.py`
+- Dataset loader (`SaliconDataset`, estensioni miste, volumi temporali opzionali): `Tempsal/src/dataloader_clean.py` (+ shim `Tempsal/src/dataloader.py`)
+- Utility (Gaussian blur, parsing fissazioni SALICON, loss helpers): `Tempsal/src/utils.py`
+- Generazione volumi SALICON (riferimento originale, da cui è derivato lo script UEyes): `Tempsal/src/generate_volumes.py`
+
+**Preparazione dataset UEyes (Step 1-2)**:
+- Parsing fissazioni grezze + normalizzazione colonna `Block`: `Tempsal/src/ueyes_utils.py`
+- Costruzione di `data_ueyes/images,maps,fixation_maps`: `Tempsal/src/prepare_ueyes.py`
+- Costruzione dei volumi temporali a 5 slice (`saliency_volumes_5`, `fixation_volumes_5`): `Tempsal/src/generate_volumes_ueyes.py`
+
+**Valutazione e visualizzazione (Step 5)**:
+- Valutazione quantitativa per-immagine su tutto il validation set: `Tempsal/src/evaluate_ueyes.py`
+- Dashboard locale di confronto tra run (Streamlit): `Tempsal/src/dashboard/app.py`
+- Analisi center-bias (centroide, mappa media): `Tempsal/src/analyze_center_bias.py`
+
+**Checkpoint** (`Tempsal/src/checkpoints/`, non tracciati da git):
+- `multilevel_tempsal.pt` — originale, pre-addestrato solo su SALICON (baseline)
+- `multilevel_tempsal_ueyes.pt` (v1), `_v2.pt`, `_v3.pt`, `_v4.pt`, `_v5.pt`, `_v6.pt`, `_v7.pt` — run 1-7 di fine-tuning su UEyes (vedi Step 4.1-4.9). **`_v4.pt` è il checkpoint finale** (Step 4.10).
+
+**Notebook di inferenza** (demo rapida, non fine-tuning):
+- `Tempsal/src/inference.ipynb` — checkpoint originale (baseline)
+- `Tempsal/src/inference_finetuned.ipynb` — stesso notebook, puntato su `multilevel_tempsal_ueyes_v4.pt`, per confrontare rapidamente i due output sulla stessa immagine
+
+**Materiale per la presentazione/tesi** (`Tempsal/results/presentation/`, non tracciato da git):
+- `slides.md` — outline delle slide + proposte di contenuto dettagliate per lo Step 4
+- `metrics_summary.csv`, `metrics_summary_by_category.csv`, `metrics_charts.xlsx`, `run5_epoch_curve.xlsx`, `centroid_distance_table.csv` — tabelle/grafici pronti per Google Sheets/Slides
+- `TempSAL_UEyes_risultati.pdf` (+ artifact HTML) — report numerico completo per la relatrice (copre run 1-4; le run 5-7, tutte a esito negativo/nullo, sono documentate solo qui in `TODO.md` e in chat, non ancora integrate nel report)
+
+**Dataset e letteratura**:
 - Dataset UEyes: `UEyes_dataset/` (root progetto tesi)
 - Paper TempSAL: `TempSAL_2301.02315v2.pdf` (root progetto tesi)
 - Paper UEyes: `UEyes_2402.05202v1.pdf` (root progetto tesi)
